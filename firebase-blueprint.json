@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["manager", "employee"] }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "A scheduled working shift for an employee",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string" },
+        "employeeName": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "customerCareRole": { "type": "string" }
+      },
+      "required": ["employeeId", "date", "startTime", "endTime"]
+    },
+    "BreakPlan": {
+      "title": "BreakPlan",
+      "description": "Daily break schedule for an employee",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "employeeId": { "type": "string" },
+        "employeeName": { "type": "string" },
+        "breakStartTime": { "type": "string" },
+        "breakEndTime": { "type": "string" },
+        "lastModified": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "employeeId", "breakStartTime", "breakEndTime"]
+    },
+    "SwapRequest": {
+      "title": "SwapRequest",
+      "description": "A request to swap a shift or break",
+      "type": "object",
+      "properties": {
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "receiverName": { "type": "string" },
+        "shiftId": { "type": "string" },
+        "type": { "type": "string", "enum": ["shift", "break"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requesterId", "receiverId", "shiftId", "type", "status", "createdAt"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app notification for users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["info", "warning", "success"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/shifts/{shiftId}": {
+      "schema": "Shift",
+      "description": "Employee shifts"
+    },
+    "/breakPlans/{planId}": {
+      "schema": "BreakPlan",
+      "description": "Daily break plans"
+    },
+    "/swaps/{swapId}": {
+      "schema": "SwapRequest",
+      "description": "Shift/Break swap requests"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "AppNotification",
+      "description": "User notifications"
+    }
+  }
+}

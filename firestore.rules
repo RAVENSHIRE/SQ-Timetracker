@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - role: string (required, enum: ['manager', 'employee'])
+    //
+    // Collection: shifts
+    // Fields:
+    //   - employeeId: string (required)
+    //   - employeeName: string (optional)
+    //   - date: string (required, YYYY-MM-DD)
+    //   - startTime: string (required)
+    //   - endTime: string (required)
+    //   - customerCareRole: string (optional)
+    //
+    // Collection: breakPlans
+    // Fields:
+    //   - date: string (required, YYYY-MM-DD)
+    //   - employeeId: string (required)
+    //   - employeeName: string (optional)
+    //   - breakStartTime: string (required)
+    //   - breakEndTime: string (required)
+    //   - lastModified: string (required, ISO 8601)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager') ||
+         (request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['manager', 'employee'];
+    }
+
+    function isValidShift(data) {
+      return data.keys().hasAll(['employeeId', 'date', 'startTime', 'endTime']) &&
+             data.employeeId is string &&
+             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
+             data.startTime is string &&
+             data.endTime is string;
+    }
+
+    function isValidBreakPlan(data) {
+      return data.keys().hasAll(['date', 'employeeId', 'breakStartTime', 'breakEndTime', 'lastModified']) &&
+             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
+             data.employeeId is string &&
+             data.breakStartTime is string &&
+             data.breakEndTime is string &&
+             data.lastModified.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidSwap(data) {
+      return data.keys().hasAll(['requesterId', 'receiverId', 'shiftId', 'type', 'status', 'createdAt']) &&
+             data.requesterId is string &&
+             data.receiverId is string &&
+             data.shiftId is string &&
+             data.type in ['shift', 'break'] &&
+             data.status in ['pending', 'approved', 'rejected', 'completed'] &&
+             data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.userId is string &&
+             data.title is string &&
+             data.message is string &&
+             data.type in ['info', 'warning', 'success'] &&
+             data.read is bool &&
+             data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.employeeId);
+      allow write: if isAdmin() && isValidShift(request.resource.data);
+    }
+
+    match /breakPlans/{planId} {
+      allow read: if isAuthenticated(); // Everyone can see break plans for the day
+      allow write: if isAdmin() && isValidBreakPlan(request.resource.data);
+    }
+
+    match /swaps/{swapId} {
+      allow read: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverId));
+      allow create: if isAuthenticated() && isValidSwap(request.resource.data) && request.auth.uid == request.resource.data.requesterId;
+      allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.receiverId);
+      allow delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAdmin() && isValidNotification(request.resource.data);
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+  }
+}
