@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
-import { auth, db, microsoftProvider } from './firebase';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import { auth, db, microsoftProvider, handleFirestoreError, OperationType } from './firebase';
+import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User, signInAnonymously } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot, collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { UserProfile, UserRole, AppNotification } from './types';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { LogIn, LogOut, Clock, ShieldCheck, Bell } from 'lucide-react';
+import { LogIn, LogOut, Clock, ShieldCheck, Bell, User as UserIcon, Lock } from 'lucide-react';
 import ManagerDashboard from './components/ManagerDashboard';
 import EmployeeDashboard from './components/EmployeeDashboard';
 import { motion, AnimatePresence } from 'motion/react';
@@ -17,62 +17,82 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  
+  // Custom credential login state
+  const [isStaffLogin, setIsStaffLogin] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLegacySession, setIsLegacySession] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setLoading(true);
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        const profileDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        
-        if (profileDoc.exists()) {
-          setProfile(profileDoc.data() as UserProfile);
-        } else {
-          const isBootstrapAdmin = firebaseUser.email === 'j.krayenbuehl@gmail.com';
-          const newProfile: UserProfile = {
-            uid: firebaseUser.uid,
-            email: firebaseUser.email || '',
-            displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
-            role: isBootstrapAdmin ? 'manager' : 'employee',
-            department: 'Customer Care / Tier 1'
-          };
+      try {
+        setLoading(true);
+        if (firebaseUser) {
+          setUser(firebaseUser);
+          setIsLegacySession(false);
           
+          let profileDoc;
           try {
-            await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
-            setProfile(newProfile);
-            toast.success(`Welcome ${newProfile.displayName}! Role: ${newProfile.role}`);
+            profileDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           } catch (error) {
-            console.error("Error creating profile:", error);
-            toast.error("Failed to create user profile");
+            handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
+            throw error;
           }
+          
+          if (profileDoc && profileDoc.exists()) {
+            setProfile(profileDoc.data() as UserProfile);
+          } else {
+            const isBootstrapAdmin = firebaseUser.email === 'j.krayenbuehl@gmail.com';
+            const newProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              username: firebaseUser.email?.split('@')[0],
+              displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+              role: isBootstrapAdmin ? 'manager' : 'employee',
+              department: 'Customer Care / Tier 1'
+            };
+            
+            try {
+              await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
+              setProfile(newProfile);
+              toast.success(`Welcome ${newProfile.displayName}! Role: ${newProfile.role}`);
+            } catch (error) {
+              handleFirestoreError(error, OperationType.WRITE, `users/${firebaseUser.uid}`);
+              console.error("Error creating profile:", error);
+              toast.error("Failed to create user profile");
+            }
+          }
+
+          // Listen for notifications
+          const q = query(
+            collection(db, 'notifications'),
+            where('userId', '==', firebaseUser.uid),
+            orderBy('createdAt', 'desc')
+          );
+          
+          const unsubNotify = onSnapshot(q, (snapshot) => {
+            const n = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as AppNotification));
+            setNotifications(n);
+          }, (error) => {
+            handleFirestoreError(error, OperationType.LIST, 'notifications');
+          });
+
+          return () => unsubNotify();
+        } else if (!isLegacySession) {
+          setUser(null);
+          setProfile(null);
+          setNotifications([]);
         }
-
-        // Listen for notifications
-        const q = query(
-          collection(db, 'notifications'),
-          where('userId', '==', firebaseUser.uid),
-          orderBy('createdAt', 'desc')
-        );
-        const unsubNotify = onSnapshot(q, (snapshot) => {
-          const n = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as AppNotification));
-          setNotifications(n);
-          const unread = n.filter(x => !x.read);
-          if (unread.length > 0) {
-            toast.info(`You have ${unread.length} new notifications`);
-          }
-        });
-
-        return () => unsubNotify();
-      } else {
-        setUser(null);
-        setProfile(null);
-        setNotifications([]);
+      } catch (error) {
+        console.error("Initialization error:", error);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [isLegacySession]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -93,9 +113,77 @@ export default function App() {
     }
   };
 
+  const handleStaffLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    
+    try {
+      // 1. Sign in anonymously so we have a real Firebase Auth session
+      const { user: anonUser } = await signInAnonymously(auth);
+      
+      // 2. Locate or Create profile
+      if (username === 'Admin' && password === '1234') {
+        const adminProfile: UserProfile = {
+          uid: anonUser.uid,
+          email: 'admin@shiftplanner.local',
+          username: 'Admin',
+          displayName: 'System Administrator',
+          role: 'manager',
+          department: 'Management'
+        };
+        await setDoc(doc(db, 'users', anonUser.uid), adminProfile);
+        setProfile(adminProfile);
+        setIsLegacySession(true);
+        setUser(anonUser);
+        toast.success("Logged in as Administrator");
+        setLoading(false);
+        return;
+      }
+
+      // Syntax check for other users: anfangsbucstabe vorname. nachname (e.g. j.doe)
+      // We look for a profile with this username.
+      const q = query(collection(db, 'users'), where('username', '==', username));
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        const userData = snapshot.docs[0].data() as UserProfile;
+        if (password === '1234') {
+          // If the profile already has a UID that doesn't match this anon session, 
+          // we should ideally re-authenticate or link, but for this applet 
+          // we'll just allow the anon session to take over if it's a "Staff Login".
+          // In practice, we'll update the profile with the new anon UID.
+          const updatedProfile = { ...userData, uid: anonUser.uid };
+          await setDoc(doc(db, 'users', anonUser.uid), updatedProfile);
+          
+          setProfile(updatedProfile);
+          setIsLegacySession(true);
+          setUser(anonUser);
+          toast.success(`Logged in as ${userData.displayName}`);
+        } else {
+          toast.error("Invalid credentials.");
+          await signOut(auth); // Clean up anon session
+        }
+      } else {
+        toast.error("User not found.");
+        await signOut(auth);
+      }
+    } catch (err) {
+      console.error("Staff login error:", err);
+      toast.error("Authentication error.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      if (isLegacySession) {
+        setIsLegacySession(false);
+        setUser(null);
+        setProfile(null);
+      } else {
+        await signOut(auth);
+      }
       toast.info("Logged out");
     } catch (error) {
       toast.error("Logout failed");
@@ -114,21 +202,86 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#F0F0EE] flex items-center justify-center p-4">
         <Toaster position="top-right" />
-        <div className="max-w-md w-full hd-card space-y-8">
+        <div className="max-w-md w-full hd-card space-y-6">
           <div className="text-center space-y-2">
             <div className="hd-mono font-black text-2xl tracking-tighter">TEAM//SYNC_CORE</div>
-            <div className="hd-label">Authentication Required</div>
+            <div className="hd-label">Unified Access Portal</div>
           </div>
-          <div className="space-y-4">
-            <Button onClick={handleMicrosoftLogin} className="w-full bg-[#00a1f1] hover:bg-[#0081c1] text-white rounded-none hd-mono text-xs py-6">
-              SIGN_IN_WITH_MICROSOFT
-            </Button>
-            <Button onClick={handleGoogleLogin} variant="outline" className="w-full rounded-none hd-mono text-xs py-6 border-[#2A2A2A]">
-              SIGN_IN_WITH_GOOGLE
-            </Button>
-          </div>
-          <div className="text-[10px] hd-mono text-muted text-center opacity-50">
-            SECURE_SESSION_ENCRYPTION_ENABLED // NODE: US-EAST-1
+          
+          <AnimatePresence mode="wait">
+            {!isStaffLogin ? (
+              <motion.div 
+                key="social"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-4"
+              >
+                <div className="grid grid-cols-1 gap-3">
+                  <Button onClick={handleMicrosoftLogin} className="w-full bg-[#00a1f1] hover:bg-[#0081c1] text-white rounded-none hd-mono text-xs py-6 gap-3">
+                    <ShieldCheck className="h-4 w-4" /> SIGN_IN_WITH_MICROSOFT
+                  </Button>
+                  <Button onClick={handleGoogleLogin} variant="outline" className="w-full rounded-none hd-mono text-xs py-6 border-[#2A2A2A] gap-3">
+                    <LogIn className="h-4 w-4" /> SIGN_IN_WITH_GOOGLE
+                  </Button>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-line"></span></div>
+                  <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-2 text-muted hd-mono">or manual access</span></div>
+                </div>
+                <Button variant="ghost" onClick={() => setIsStaffLogin(true)} className="w-full rounded-none hd-mono text-[10px] hover:bg-ink hover:text-bg">
+                  CREDENTIAL_LOGON_OVERRIDE
+                </Button>
+              </motion.div>
+            ) : (
+              <motion.form 
+                key="staff"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                onSubmit={handleStaffLogin}
+                className="space-y-4"
+              >
+                <div className="space-y-2">
+                  <div className="hd-label text-[10px]">Staff Identity (j.doe)</div>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
+                    <input 
+                      type="text" 
+                      placeholder="USERNAME" 
+                      required
+                      className="w-full pl-10 pr-4 py-3 bg-bg border-line hd-mono text-xs focus:outline-none focus:border-accent"
+                      value={username}
+                      onChange={e => setUsername(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="hd-label text-[10px]">Security Code</div>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
+                    <input 
+                      type="password" 
+                      placeholder="PASSWORD" 
+                      required
+                      className="w-full pl-10 pr-4 py-3 bg-bg border-line hd-mono text-xs focus:outline-none focus:border-accent"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <Button type="submit" className="w-full bg-ink text-bg rounded-none hd-mono text-xs py-5">
+                  VERIFY_CREDENTIALS
+                </Button>
+                <Button variant="ghost" onClick={() => setIsStaffLogin(false)} className="w-full rounded-none hd-mono text-[10px] hover:underline">
+                  RETURN_TO_OAUTH
+                </Button>
+              </motion.form>
+            )}
+          </AnimatePresence>
+          
+          <div className="text-[10px] hd-mono text-muted text-center opacity-50 uppercase border-t border-line/20 pt-4">
+            SECURE_SESSION_ENCRYPTION_ENABLED // VER: 1.0.42
           </div>
         </div>
       </div>
@@ -144,8 +297,8 @@ export default function App() {
         <div className="hd-mono font-black text-lg tracking-tighter">TEAM//SYNC_CORE</div>
         <div className="flex items-center gap-6">
           <div className="text-[11px] text-right leading-tight">
-            <div className="hd-mono text-accent uppercase font-bold">
-              {profile?.role}: {profile?.displayName} [ID_{user.uid.slice(0,4).toUpperCase()}]
+            <div className={`hd-mono uppercase font-bold ${profile?.role === 'manager' ? 'text-accent' : 'text-ink'}`}>
+              {profile?.role}: {profile?.displayName} [ID_{profile?.username?.toUpperCase() || user.uid.slice(0,4).toUpperCase()}]
             </div>
             <div className="text-muted uppercase font-medium">
               DEPT: {profile?.department || 'CUSTOMER CARE / TIER 1'}

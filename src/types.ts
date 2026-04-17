@@ -3,16 +3,21 @@ export type UserRole = 'manager' | 'employee';
 export interface UserProfile {
   uid: string;
   email: string;
+  username?: string;
   displayName?: string;
   role: UserRole;
   department?: string;
 }
 
+export type ShiftType = 'normal' | 'second' | 'special' | 'late';
+
 export interface Shift {
   id: string;
   employeeId: string;
+  employeeUid: string;
   employeeName: string;
   date: string; // YYYY-MM-DD
+  type: ShiftType;
   startTime: string;
   endTime: string;
   customerCareRole: string;
@@ -23,6 +28,7 @@ export interface BreakPlan {
   id: string;
   date: string; // YYYY-MM-DD
   employeeId: string;
+  employeeUid: string;
   employeeName: string;
   breakStartTime: string;
   breakEndTime: string;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../firebase';
+import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, onSnapshot, query, where, orderBy, addDoc, doc, updateDoc } from 'firebase/firestore';
 import { Shift, BreakPlan, UserProfile, SwapRequest, AppNotification } from '../types';
 import { Button } from '@/components/ui/button';
@@ -22,11 +22,25 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
   const today = format(new Date(), 'yyyy-MM-dd');
 
   useEffect(() => {
-    const unsubShifts = onSnapshot(query(collection(db, 'shifts'), where('employeeId', '==', profile.email), orderBy('date', 'desc')), (s) => {
+    const unsubShifts = onSnapshot(query(
+      collection(db, 'shifts'), 
+      where('employeeUid', '==', profile.uid), 
+      orderBy('date', 'desc')
+    ), (s) => {
       setMyShifts(s.docs.map(d => ({ id: d.id, ...d.data() } as Shift)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'shifts');
     });
-    const unsubBreaks = onSnapshot(query(collection(db, 'breakPlans'), where('date', '==', today), orderBy('breakStartTime', 'asc')), (s) => {
+    
+    const unsubBreaks = onSnapshot(query(
+      collection(db, 'breakPlans'), 
+      where('date', '==', today), 
+      where('employeeUid', '==', profile.uid),
+      orderBy('breakStartTime', 'asc')
+    ), (s) => {
       setTodayBreaks(s.docs.map(d => ({ id: d.id, ...d.data() } as BreakPlan)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'breakPlans');
     });
     const unsubSwaps = onSnapshot(query(collection(db, 'swaps'), where('requesterId', '==', profile.uid)), (s) => {
       setMySwaps(s.docs.map(d => ({ id: d.id, ...d.data() } as SwapRequest)));
@@ -47,8 +61,9 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
   useEffect(() => {
     const checkBreaks = () => {
       const now = new Date();
+      
       todayBreaks.forEach(bp => {
-        if (bp.employeeId === profile.email) {
+        if (bp.employeeUid === profile.uid) {
           const [hours, minutes] = bp.breakStartTime.split(':').map(Number);
           const breakTime = new Date();
           breakTime.setHours(hours, minutes, 0);
@@ -179,7 +194,17 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                 <div key={s.id} className="hd-table-row border-line">
                   <div className="flex items-center gap-4">
                     <div className="hd-mono text-sm font-bold w-20">{s.startTime}</div>
-                    <div className="text-sm font-bold">{s.customerCareRole}: Inbound Queue</div>
+                    <div className="flex flex-col">
+                      <div className="text-sm font-bold">{s.customerCareRole}: Inbound Queue</div>
+                      <Badge className={`rounded-none uppercase text-[8px] hd-mono w-fit mt-1 px-1.5 h-4 inline-flex items-center ${
+                        s.type === 'late' ? 'bg-red-100 text-red-600' : 
+                        s.type === 'special' ? 'bg-blue-100 text-blue-600' : 
+                        s.type === 'second' ? 'bg-green-100 text-green-600' : 
+                        'bg-gray-100 text-gray-600'
+                      }`}>
+                        {s.type}
+                      </Badge>
+                    </div>
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-[10px] hd-mono uppercase text-accent font-bold">ACTIVE</div>
@@ -201,7 +226,17 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
               {myShifts.filter(s => s.date > today).slice(0, 3).map(s => (
                 <div key={s.id} className="bg-bg p-3 hd-border hd-mono text-[10px] space-y-1">
                   <div className="font-bold text-accent">{format(parseISO(s.date), 'EEE: MM/dd')}</div>
-                  <div>{s.startTime} - {s.endTime}</div>
+                  <div className="flex justify-between items-center">
+                    <span>{s.startTime} - {s.endTime}</span>
+                    <Badge className={`rounded-none uppercase text-[7px] hd-mono px-1 h-3 inline-flex items-center ${
+                      s.type === 'late' ? 'bg-red-100 text-red-600' : 
+                      s.type === 'special' ? 'bg-blue-100 text-blue-600' : 
+                      s.type === 'second' ? 'bg-green-100 text-green-600' : 
+                      'bg-gray-100 text-gray-600'
+                    }`}>
+                      {s.type}
+                    </Badge>
+                  </div>
                   <div className="opacity-60 uppercase">{s.customerCareRole}</div>
                 </div>
               ))}

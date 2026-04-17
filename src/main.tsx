@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import ErrorBoundary from './components/ErrorBoundary';
 import './index.css';
 
 // Suppress benign WebSocket errors from Vite's HMR which is disabled in this environment
@@ -17,6 +18,8 @@ window.addEventListener('error', suppressHmrErrors);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

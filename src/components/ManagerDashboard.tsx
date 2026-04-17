@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../firebase';
-import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, writeBatch, where } from 'firebase/firestore';
-import { Shift, BreakPlan, UserProfile, SwapRequest, AppNotification } from '../types';
+import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, writeBatch, where, getDocs } from 'firebase/firestore';
+import { UserProfile, UserRole, AppNotification, Shift, BreakPlan, SwapRequest, ShiftType } from '../types';
+import { SHIFT_DEFINITIONS } from '../constants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -9,8 +10,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Trash2, Upload, Calendar as CalendarIcon, Clock, Users, Bell, Check, X, FileSpreadsheet } from 'lucide-react';
-import { format } from 'date-fns';
+import { Plus, Trash2, Upload, Calendar as CalendarIcon, Clock, Users, Bell, Check, X, FileSpreadsheet, AlertTriangle, Lock } from 'lucide-react';
+import { format, addDays, subDays } from 'date-fns';
 import * as XLSX from 'xlsx';
 
 interface ManagerDashboardProps {
@@ -24,17 +25,29 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
   const [view, setView] = useState<ViewType>('shifts');
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [breakPlans, setBreakPlans] = useState<BreakPlan[]>([]);
+  const [employees, setEmployees] = useState<UserProfile[]>([]);
   const [swapRequests, setSwapRequests] = useState<SwapRequest[]>([]);
   const [isShiftDialogOpen, setIsShiftDialogOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [newShift, setNewShift] = useState<Partial<Shift>>({
     date: format(new Date(), 'yyyy-MM-dd'),
-    startTime: '09:00',
-    endTime: '17:00',
+    type: 'normal',
+    startTime: SHIFT_DEFINITIONS.normal.startTime,
+    endTime: SHIFT_DEFINITIONS.normal.endTime,
     customerCareRole: 'Support',
     status: 'scheduled'
   });
+
+  const handleShiftTypeChange = (type: ShiftType) => {
+    const def = SHIFT_DEFINITIONS[type];
+    setNewShift({
+      ...newShift,
+      type,
+      startTime: def.startTime,
+      endTime: def.endTime
+    });
+  };
 
   useEffect(() => {
     const unsubShifts = onSnapshot(query(collection(db, 'shifts'), orderBy('date', 'desc')), (s) => {
@@ -46,11 +59,15 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
     const unsubSwaps = onSnapshot(query(collection(db, 'swaps'), orderBy('createdAt', 'desc')), (s) => {
       setSwapRequests(s.docs.map(d => ({ id: d.id, ...d.data() } as SwapRequest)));
     });
+    const unsubEmployees = onSnapshot(collection(db, 'users'), (s) => {
+      setEmployees(s.docs.map(d => d.data() as UserProfile));
+    });
 
     return () => {
       unsubShifts();
       unsubBreaks();
       unsubSwaps();
+      unsubEmployees();
     };
   }, []);
 
@@ -68,27 +85,77 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
         const data = XLSX.utils.sheet_to_json(ws) as any[];
 
         const batch = writeBatch(db);
-        data.forEach((row) => {
+        let importedCount = 0;
+        let rejectedCount = 0;
+
+        for (const row of data) {
+          const email = row.Email || row.employeeId;
+          const name = row.Name || row.employeeName;
+          const date = row.Date || format(new Date(), 'yyyy-MM-dd');
+          const start = row.Start || row.startTime;
+          
+          // Find employee UID from existing system users
+          const employee = employees.find(e => 
+            (e.email && e.email.toLowerCase() === email?.toLowerCase()) || 
+            (e.username && e.username.toLowerCase() === email?.toLowerCase()) ||
+            (e.displayName && e.displayName.toLowerCase() === name?.toLowerCase())
+          );
+
+          if (!employee) {
+            console.warn(`Skipping shift for ${email}: User not found in system.`);
+            rejectedCount++;
+            continue;
+          }
+
+          let shiftType: ShiftType = 'normal';
+          if (start === SHIFT_DEFINITIONS.second.startTime) shiftType = 'second';
+          else if (start === SHIFT_DEFINITIONS.special.startTime) shiftType = 'special';
+          else if (start === SHIFT_DEFINITIONS.late.startTime) shiftType = 'late';
+
+          const { valid, message } = await validateShiftRule(employee.email || employee.username!, date, shiftType);
+          
+          if (!valid) {
+            console.warn(`Skipping invalid shift for ${employee.email} on ${date}: ${message}`);
+            rejectedCount++;
+            continue;
+          }
+
           const shiftRef = doc(collection(db, 'shifts'));
           batch.set(shiftRef, {
-            employeeId: row.Email || row.employeeId,
-            employeeName: row.Name || row.employeeName,
-            date: row.Date || format(new Date(), 'yyyy-MM-dd'),
-            startTime: row.Start || row.startTime || '09:00',
-            endTime: row.End || row.endTime || '17:00',
+            employeeId: employee.email || employee.username,
+            employeeUid: employee.uid,
+            employeeName: employee.displayName || employee.username,
+            date,
+            type: shiftType,
+            startTime: start || SHIFT_DEFINITIONS[shiftType].startTime,
+            endTime: row.End || row.endTime || SHIFT_DEFINITIONS[shiftType].endTime,
             customerCareRole: row.Role || row.customerCareRole || 'Support',
             status: 'scheduled'
           });
-        });
+
+          const def = SHIFT_DEFINITIONS[shiftType];
+          def.breaks.forEach(b => {
+            const breakRef = doc(collection(db, 'breakPlans'));
+            batch.set(breakRef, {
+              date,
+              employeeId: employee.email || employee.username,
+              employeeUid: employee.uid,
+              employeeName: employee.displayName || employee.username,
+              breakStartTime: b.start,
+              breakEndTime: b.end,
+              lastModified: new Date().toISOString(),
+              reason: `Imported: ${b.label}`
+            });
+          });
+          
+          importedCount++;
+        }
 
         await batch.commit();
-        toast.success(`Successfully imported ${data.length} shifts`);
-        
-        // Notify employees
-        const uniqueEmails = Array.from(new Set(data.map(r => r.Email || r.employeeId)));
-        for (const email of uniqueEmails) {
-          // In a real app, we'd find the UID for this email
-          // For now, we'll assume we can notify by email or just skip for this demo
+        if (rejectedCount > 0) {
+          toast.warning(`Imported ${importedCount} shifts. ${rejectedCount} shifts were skipped due to rule violations.`);
+        } else {
+          toast.success(`Successfully imported ${importedCount} shifts`);
         }
       } catch (error) {
         console.error("Excel parse error:", error);
@@ -98,11 +165,83 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
     reader.readAsBinaryString(file);
   };
 
+  const validateShiftRule = async (employeeId: string, dateStr: string, type: ShiftType): Promise<{ valid: boolean; message?: string }> => {
+    const date = new Date(dateStr);
+    
+    // Rule: after one late there must be a special shift following!
+    
+    // Check if yesterday was a late shift
+    const yesterday = format(subDays(date, 1), 'yyyy-MM-dd');
+    const yesterdayShifts = await getDocs(query(
+      collection(db, 'shifts'), 
+      where('employeeId', '==', employeeId), 
+      where('date', '==', yesterday)
+    ));
+    
+    const wasYesterdayLate = yesterdayShifts.docs.some(d => d.data().type === 'late');
+    if (wasYesterdayLate && type !== 'special') {
+      return { 
+        valid: false, 
+        message: "Rule Violation: The previous day was a Late shift. A Special shift is required today." 
+      };
+    }
+
+    // Check if today is a late shift, then tomorrow must be special
+    if (type === 'late') {
+      const tomorrow = format(addDays(date, 1), 'yyyy-MM-dd');
+      const tomorrowShifts = await getDocs(query(
+        collection(db, 'shifts'), 
+        where('employeeId', '==', employeeId), 
+        where('date', '==', tomorrow)
+      ));
+      
+      const existsTomorrowNonSpecial = tomorrowShifts.docs.some(d => d.data().type !== 'special');
+      if (existsTomorrowNonSpecial) {
+        return { 
+          valid: false, 
+          message: "Rule Violation: Assigning a Late shift today requires the existing Special shift tomorrow." 
+        };
+      }
+    }
+
+    return { valid: true };
+  };
+
   const handleAddShift = async () => {
+    if (!newShift.employeeId || !newShift.date || !newShift.type) {
+      toast.error("Please fill all required fields");
+      return;
+    }
+
+    const { valid, message } = await validateShiftRule(newShift.employeeId, newShift.date, newShift.type as ShiftType);
+    if (!valid) {
+      toast.error(message, { duration: 5000 });
+      return;
+    }
+
     try {
       await addDoc(collection(db, 'shifts'), newShift);
-      toast.success("Shift added");
+      toast.success("Shift added successfully");
       setIsShiftDialogOpen(false);
+      
+      // Auto-generate breaks for this shift
+      const def = SHIFT_DEFINITIONS[newShift.type as ShiftType];
+      const batch = writeBatch(db);
+      def.breaks.forEach(b => {
+        const breakRef = doc(collection(db, 'breakPlans'));
+        batch.set(breakRef, {
+          date: newShift.date,
+          employeeId: newShift.employeeId,
+          employeeUid: newShift.employeeUid,
+          employeeName: newShift.employeeName,
+          breakStartTime: b.start,
+          breakEndTime: b.end,
+          lastModified: new Date().toISOString(),
+          reason: `Automatic: ${b.label}`
+        });
+      });
+      await batch.commit();
+
     } catch (e) { toast.error("Failed to add shift"); }
   };
 
@@ -141,7 +280,6 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
 
   return (
     <div className="h-full grid grid-cols-[240px_1fr_300px]">
-      {/* Left Sidebar: Navigation */}
       <aside className="hd-border-r p-5 flex flex-col gap-8 bg-white/50">
         <div className="space-y-6">
           <div className="space-y-3">
@@ -195,16 +333,17 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
         </div>
 
         <div className="mt-auto pt-4 hd-border-t">
-          <div className="hd-label mb-2">System Health</div>
-          <div className="hd-mono text-[9px] space-y-1 opacity-60">
-            <div>DB_STATUS: CONNECTED</div>
-            <div>AUTH_PROVIDER: MS_OAUTH</div>
-            <div>LATENCY: 42ms</div>
+          <div className="hd-label mb-2">Shift Rules</div>
+          <div className="hd-mono text-[9px] space-y-2 opacity-80 bg-bg p-3 border border-line">
+            <div className="text-accent font-bold">STRICT_LATE_POLICY:</div>
+            <div className="leading-tight text-[8px]">
+              IF PREV_SHIFT == LATE<br/>
+              THEN NEXT_SHIFT MUST == SPECIAL
+            </div>
           </div>
         </div>
       </aside>
 
-      {/* Center: Content Area */}
       <section className="overflow-y-auto bg-white">
         <div className="hd-border-b px-6 py-4 flex justify-between items-baseline sticky top-0 bg-white z-10">
           <h2 className="text-xl hd-serif uppercase tracking-tight">
@@ -230,9 +369,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                   <TableHeader className="bg-bg">
                     <TableRow className="hover:bg-transparent border-line">
                       <TableHead className="hd-label">Employee</TableHead>
-                      <TableHead className="hd-label">Date</TableHead>
+                      <TableHead className="hd-label">Type</TableHead>
                       <TableHead className="hd-label">Window</TableHead>
-                      <TableHead className="hd-label">Role</TableHead>
                       <TableHead className="hd-label text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -240,13 +378,25 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                     {shifts.map(s => (
                       <TableRow key={s.id} className="border-line hover:bg-bg/50">
                         <TableCell className="hd-mono text-xs font-bold">{s.employeeName}</TableCell>
-                        <TableCell className="text-xs">{s.date}</TableCell>
-                        <TableCell className="hd-mono text-xs text-accent">{s.startTime} - {s.endTime}</TableCell>
-                        <TableCell className="text-xs uppercase font-medium">{s.customerCareRole}</TableCell>
+                        <TableCell>
+                          <Badge className={`rounded-none uppercase text-[9px] hd-mono ${
+                            s.type === 'late' ? 'bg-red-100 text-red-600' : 
+                            s.type === 'special' ? 'bg-blue-100 text-blue-600' : 
+                            s.type === 'second' ? 'bg-green-100 text-green-600' : 
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {s.type}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="hd-mono text-xs text-accent font-bold">{s.startTime} - {s.endTime}</TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" onClick={() => deleteDoc(doc(db, 'shifts', s.id))}>
-                            <Trash2 className="h-3 w-3 text-muted" />
-                          </Button>
+                          {profile.role === 'manager' ? (
+                            <Button variant="ghost" size="icon" onClick={() => deleteDoc(doc(db, 'shifts', s.id))}>
+                              <Trash2 className="h-3 w-3 text-muted" />
+                            </Button>
+                          ) : (
+                            <Lock className="h-3 w-3 text-muted mx-auto opacity-30" />
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -254,6 +404,31 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                 </Table>
               </div>
             </div>
+          )}
+
+          {view === 'breaks' && (
+             <div className="hd-border">
+             <Table>
+               <TableHeader className="bg-bg">
+                 <TableRow className="hover:bg-transparent border-line">
+                   <TableHead className="hd-label">Employee</TableHead>
+                   <TableHead className="hd-label">Time</TableHead>
+                   <TableHead className="hd-label">Note</TableHead>
+                   <TableHead className="hd-label text-right">Date</TableHead>
+                 </TableRow>
+               </TableHeader>
+               <TableBody>
+                 {breakPlans.map(bp => (
+                   <TableRow key={bp.id} className="border-line hover:bg-bg/50">
+                     <TableCell className="hd-mono text-xs font-bold">{bp.employeeName}</TableCell>
+                     <TableCell className="hd-mono text-xs text-accent">{bp.breakStartTime} - {bp.breakEndTime}</TableCell>
+                     <TableCell className="text-xs italic">{bp.reason || 'SOP_STANDSTILL'}</TableCell>
+                     <TableCell className="text-right text-[10px] hd-mono opacity-60">{bp.date}</TableCell>
+                   </TableRow>
+                 ))}
+               </TableBody>
+             </Table>
+           </div>
           )}
 
           {view === 'swaps' && (
@@ -270,9 +445,6 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                       <div className="text-[10px] text-muted uppercase">
                         TYPE: {swap.type} // SHIFT_ID: {swap.shiftId} // STATUS: <span className={swap.status === 'accepted' ? 'text-accent font-bold' : ''}>{swap.status}</span>
                       </div>
-                      {swap.status === 'pending' && (
-                        <div className="text-[9px] text-muted italic">WAITING_FOR_RECEIVER_ACCEPTANCE</div>
-                      )}
                     </div>
                     {swap.status === 'accepted' && (
                       <div className="flex gap-2">
@@ -284,11 +456,6 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                         </Button>
                       </div>
                     )}
-                    {swap.status === 'pending' && (
-                      <Button size="sm" variant="ghost" disabled className="hd-mono text-[10px] opacity-50">
-                        PENDING_RECEIVER
-                      </Button>
-                    )}
                   </div>
                 ))
               )}
@@ -297,7 +464,6 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
         </div>
       </section>
 
-      {/* Right Sidebar: Notifications & Status */}
       <aside className="hd-border-l bg-[#2A2A2A] text-bg p-5 flex flex-col overflow-hidden">
         <div className="flex items-center justify-between mb-6 border-b border-white/10 pb-2">
           <h3 className="hd-serif hd-italic text-lg">System Alerts</h3>
@@ -321,33 +487,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
             ))
           )}
         </div>
-
-        <div className="mt-6 pt-4 border-t border-white/10">
-          <div className="hd-label text-white/40 mb-3">Shift Distribution</div>
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <div className="flex justify-between text-[9px] hd-mono">
-                <span>TIER_1_SUPPORT</span>
-                <span>85%</span>
-              </div>
-              <div className="h-1 bg-white/10">
-                <div className="h-full bg-accent w-[85%]"></div>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-[9px] hd-mono">
-                <span>TIER_2_TECHNICAL</span>
-                <span>40%</span>
-              </div>
-              <div className="h-1 bg-white/10">
-                <div className="h-full bg-white/40 w-[40%]"></div>
-              </div>
-            </div>
-          </div>
-        </div>
       </aside>
 
-      {/* Shift Dialog */}
       <Dialog open={isShiftDialogOpen} onOpenChange={setIsShiftDialogOpen}>
         <DialogContent className="rounded-none border-line">
           <DialogHeader>
@@ -355,21 +496,51 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label className="hd-label">Employee Identity</Label>
-              <Input 
-                className="rounded-none border-line hd-mono text-xs"
-                placeholder="EMAIL_OR_ID" 
-                value={newShift.employeeId || ''} 
-                onChange={e => setNewShift({...newShift, employeeId: e.target.value})}
-              />
-              <Input 
-                className="rounded-none border-line hd-mono text-xs"
-                placeholder="DISPLAY_NAME" 
-                value={newShift.employeeName || ''} 
-                onChange={e => setNewShift({...newShift, employeeName: e.target.value})}
-              />
+              <Label className="hd-label">Employee Selection</Label>
+              <Select 
+                onValueChange={(uid) => {
+                  const emp = employees.find(e => e.uid === uid);
+                  if (emp) {
+                    setNewShift({
+                      ...newShift, 
+                      employeeId: emp.email || emp.username || '',
+                      employeeUid: emp.uid,
+                      employeeName: emp.displayName || emp.username || ''
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger className="rounded-none border-line hd-mono text-xs">
+                  <SelectValue placeholder="SELECT_EMPLOYEE" />
+                </SelectTrigger>
+                <SelectContent className="rounded-none border-line">
+                  {employees.map(e => (
+                    <SelectItem key={e.uid} value={e.uid}>
+                      {e.displayName || e.username} ({e.role})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+            
             <div className="grid grid-cols-2 gap-4">
+               <div className="grid gap-2">
+                <Label className="hd-label">Shift Type</Label>
+                <Select 
+                  value={newShift.type} 
+                  onValueChange={(v) => handleShiftTypeChange(v as ShiftType)}
+                >
+                  <SelectTrigger className="rounded-none border-line hd-mono text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-none border-line">
+                    <SelectItem value="normal">Normal (08:00)</SelectItem>
+                    <SelectItem value="second">Second (08:45)</SelectItem>
+                    <SelectItem value="special">Special (09:00)</SelectItem>
+                    <SelectItem value="late">Late (11:30)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="grid gap-2">
                 <Label className="hd-label">Operational Date</Label>
                 <Input 
@@ -379,21 +550,24 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                   onChange={e => setNewShift({...newShift, date: e.target.value})}
                 />
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label className="hd-label">Functional Role</Label>
-                <Select 
-                  value={newShift.customerCareRole} 
-                  onValueChange={v => setNewShift({...newShift, customerCareRole: v})}
-                >
-                  <SelectTrigger className="rounded-none border-line hd-mono text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-none border-line">
-                    <SelectItem value="Support">Support</SelectItem>
-                    <SelectItem value="Billing">Billing</SelectItem>
-                    <SelectItem value="Technical">Technical</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label className="hd-label">Window Start</Label>
+                <Input 
+                  className="rounded-none border-line hd-mono text-xs"
+                  value={newShift.startTime || ''} 
+                  onChange={e => setNewShift({...newShift, startTime: e.target.value})}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label className="hd-label">Window End</Label>
+                <Input 
+                  className="rounded-none border-line hd-mono text-xs"
+                  value={newShift.endTime || ''} 
+                  onChange={e => setNewShift({...newShift, endTime: e.target.value})}
+                />
               </div>
             </div>
           </div>
@@ -403,5 +577,13 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function Badge({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${className}`}>
+      {children}
+    </span>
   );
 }

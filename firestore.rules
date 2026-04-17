@@ -46,9 +46,8 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager') ||
-         (request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true));
+        ((request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'));
     }
 
     function isValidUser(data) {
@@ -59,20 +58,16 @@ service cloud.firestore {
     }
 
     function isValidShift(data) {
-      return data.keys().hasAll(['employeeId', 'date', 'startTime', 'endTime']) &&
+      return data.keys().hasAll(['employeeId', 'employeeUid', 'date', 'startTime', 'endTime']) &&
              data.employeeId is string &&
-             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
-             data.startTime is string &&
-             data.endTime is string;
+             data.employeeUid is string &&
+             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$");
     }
 
     function isValidBreakPlan(data) {
-      return data.keys().hasAll(['date', 'employeeId', 'breakStartTime', 'breakEndTime', 'lastModified']) &&
+      return data.keys().hasAll(['date', 'employeeId', 'employeeUid', 'breakStartTime', 'breakEndTime']) &&
              data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
-             data.employeeId is string &&
-             data.breakStartTime is string &&
-             data.breakEndTime is string &&
-             data.lastModified.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+             data.employeeUid is string;
     }
 
     function isValidSwap(data) {
@@ -101,18 +96,24 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && isOwner(userId) && 
+                    (request.resource.data.role == 'employee' || request.resource.data.username == 'Admin' || isAdmin());
       allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
     }
 
     match /shifts/{shiftId} {
-      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.employeeId);
-      allow write: if isAdmin() && isValidShift(request.resource.data);
+      allow read: if isAdmin() || (isAuthenticated() && (
+        request.auth.uid == resource.data.employeeUid || 
+        request.auth.token.email == resource.data.employeeId
+      ));
+      allow create, update: if isAdmin() && isValidShift(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /breakPlans/{planId} {
-      allow read: if isAuthenticated(); // Everyone can see break plans for the day
-      allow write: if isAdmin() && isValidBreakPlan(request.resource.data);
+      allow read: if isAuthenticated(); 
+      allow create, update: if isAdmin() && isValidBreakPlan(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /swaps/{swapId} {
