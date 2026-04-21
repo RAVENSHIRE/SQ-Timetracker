@@ -167,9 +167,13 @@ export default function App() {
         toast.error("User not found.");
         await signOut(auth);
       }
-    } catch (err) {
-      console.error("Staff login error:", err);
-      toast.error("Authentication error.");
+    } catch (err: any) {
+      console.error("Staff login error details:", err);
+      if (err.code === 'auth/admin-restricted-operation') {
+        toast.error("Anonymous authentication is disabled in Firebase. Please enable it in the Firebase Console -> Authentication -> Sign-in method.", { duration: 6000 });
+      } else {
+        toast.error("Authentication error. Please check your credentials or network.");
+      }
     } finally {
       setLoading(false);
     }
@@ -193,7 +197,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#F0F0EE]">
-        <div className="hd-mono text-sm animate-pulse">INITIALIZING_SYSTEM_CORE...</div>
+        <div className="hd-mono text-sm animate-pulse">Initializing Planner...</div>
       </div>
     );
   }
@@ -204,8 +208,8 @@ export default function App() {
         <Toaster position="top-right" />
         <div className="max-w-md w-full hd-card space-y-6">
           <div className="text-center space-y-2">
-            <div className="hd-mono font-black text-2xl tracking-tighter">TEAM//SYNC_CORE</div>
-            <div className="hd-label">Unified Access Portal</div>
+            <div className="hd-mono font-black text-2xl tracking-tighter uppercase">Customer Care Planner</div>
+            <div className="text-[10px] uppercase font-bold text-muted">Authentication Portal</div>
           </div>
           
           <AnimatePresence mode="wait">
@@ -219,18 +223,18 @@ export default function App() {
               >
                 <div className="grid grid-cols-1 gap-3">
                   <Button onClick={handleMicrosoftLogin} className="w-full bg-[#00a1f1] hover:bg-[#0081c1] text-white rounded-none hd-mono text-xs py-6 gap-3">
-                    <ShieldCheck className="h-4 w-4" /> SIGN_IN_WITH_MICROSOFT
+                    <ShieldCheck className="h-4 w-4" /> Sign in with Microsoft
                   </Button>
                   <Button onClick={handleGoogleLogin} variant="outline" className="w-full rounded-none hd-mono text-xs py-6 border-[#2A2A2A] gap-3">
-                    <LogIn className="h-4 w-4" /> SIGN_IN_WITH_GOOGLE
+                    <LogIn className="h-4 w-4" /> Sign in with Google
                   </Button>
                 </div>
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-line"></span></div>
-                  <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-2 text-muted hd-mono">or manual access</span></div>
+                  <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-3 text-muted hd-mono">or manual access</span></div>
                 </div>
                 <Button variant="ghost" onClick={() => setIsStaffLogin(true)} className="w-full rounded-none hd-mono text-[10px] hover:bg-ink hover:text-bg">
-                  CREDENTIAL_LOGON_OVERRIDE
+                  ENTER_STAFF_CREDENTIALS
                 </Button>
               </motion.div>
             ) : (
@@ -243,12 +247,12 @@ export default function App() {
                 className="space-y-4"
               >
                 <div className="space-y-2">
-                  <div className="hd-label text-[10px]">Staff Identity (j.doe)</div>
+                  <div className="hd-label text-[10px]">Username (e.g. j.doe)</div>
                   <div className="relative">
                     <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
                     <input 
                       type="text" 
-                      placeholder="USERNAME" 
+                      placeholder="Enter Username" 
                       required
                       className="w-full pl-10 pr-4 py-3 bg-bg border-line hd-mono text-xs focus:outline-none focus:border-accent"
                       value={username}
@@ -257,12 +261,12 @@ export default function App() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="hd-label text-[10px]">Security Code</div>
+                  <div className="hd-label text-[10px]">Access Code</div>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
                     <input 
                       type="password" 
-                      placeholder="PASSWORD" 
+                      placeholder="Enter Password" 
                       required
                       className="w-full pl-10 pr-4 py-3 bg-bg border-line hd-mono text-xs focus:outline-none focus:border-accent"
                       value={password}
@@ -270,18 +274,18 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <Button type="submit" className="w-full bg-ink text-bg rounded-none hd-mono text-xs py-5">
-                  VERIFY_CREDENTIALS
+                <Button type="submit" className="w-full bg-ink text-bg rounded-none hd-mono text-xs py-5 transition-all active:scale-95">
+                  AUTHENTICATE
                 </Button>
                 <Button variant="ghost" onClick={() => setIsStaffLogin(false)} className="w-full rounded-none hd-mono text-[10px] hover:underline">
-                  RETURN_TO_OAUTH
+                  BACK_TO_SOCIAL_LOGIN
                 </Button>
               </motion.form>
             )}
           </AnimatePresence>
           
-          <div className="text-[10px] hd-mono text-muted text-center opacity-50 uppercase border-t border-line/20 pt-4">
-            SECURE_SESSION_ENCRYPTION_ENABLED // VER: 1.0.42
+          <div className="text-[10px] hd-mono text-muted text-center opacity-30 uppercase border-t border-line/20 pt-4">
+            Secured Connection // HTTPS_ENABLED
           </div>
         </div>
       </div>
@@ -294,14 +298,14 @@ export default function App() {
       
       {/* Header */}
       <header className="h-[60px] hd-border-b flex justify-between items-center px-5 shrink-0 bg-white">
-        <div className="hd-mono font-black text-lg tracking-tighter">TEAM//SYNC_CORE</div>
+        <div className="hd-mono font-black text-lg tracking-tighter uppercase">Customer Care Planner</div>
         <div className="flex items-center gap-6">
           <div className="text-[11px] text-right leading-tight">
             <div className={`hd-mono uppercase font-bold ${profile?.role === 'manager' ? 'text-accent' : 'text-ink'}`}>
-              {profile?.role}: {profile?.displayName} [ID_{profile?.username?.toUpperCase() || user.uid.slice(0,4).toUpperCase()}]
+              {profile?.role === 'manager' ? 'MANAGER' : 'STAFF'}: {profile?.displayName}
             </div>
             <div className="text-muted uppercase font-medium">
-              DEPT: {profile?.department || 'CUSTOMER CARE / TIER 1'}
+              DEPT: {profile?.department === 'Customer Care / Tier 1' ? 'CUSTOMER CARE' : profile?.department?.toUpperCase()}
             </div>
           </div>
           <Button variant="ghost" size="icon" onClick={handleLogout} className="rounded-none hover:bg-ink hover:text-bg">
@@ -321,7 +325,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="h-[30px] bg-[#2A2A2A] text-[#888] text-[10px] flex items-center px-5 hd-mono shrink-0">
-        SYSTEM STATUS: NOMINAL // SESSION: {user.uid.slice(0,8).toUpperCase()} // {format(new Date(), 'yyyy-MM-dd HH:mm:ss')}
+        System Status: Online // Active Session: {user.uid.slice(0,8).toUpperCase()} // {format(new Date(), 'HH:mm')}
       </footer>
     </div>
   );

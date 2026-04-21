@@ -23,11 +23,15 @@ type ViewType = 'shifts' | 'breaks' | 'swaps' | 'team';
 
 export default function ManagerDashboard({ profile, notifications }: ManagerDashboardProps) {
   const [view, setView] = useState<ViewType>('shifts');
+  const [currentMonth, setCurrentMonth] = useState(new Date());
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [breakPlans, setBreakPlans] = useState<BreakPlan[]>([]);
   const [employees, setEmployees] = useState<UserProfile[]>([]);
   const [swapRequests, setSwapRequests] = useState<SwapRequest[]>([]);
   const [isShiftDialogOpen, setIsShiftDialogOpen] = useState(false);
+  const [isSwapDialogOpen, setIsSwapDialogOpen] = useState(false);
+  const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
+  const [selectedColleague, setSelectedColleague] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [newShift, setNewShift] = useState<Partial<Shift>>({
@@ -255,6 +259,7 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
       // Update the shift owner
       batch.update(doc(db, 'shifts', swap.shiftId), { 
         employeeId: swap.receiverId,
+        employeeUid: swap.receiverUid || '', 
         employeeName: swap.receiverName 
       });
 
@@ -274,8 +279,148 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
     } catch (e) { toast.error("Failed to approve swap"); }
   };
 
+  const handleRequestSwap = async () => {
+    if (!selectedShift || !selectedColleague) {
+      toast.error("Please select both a shift and a colleague.");
+      return;
+    }
+
+    const colleague = employees.find(e => e.uid === selectedColleague);
+    if (!colleague) return;
+
+    try {
+      const payload = {
+        requesterId: profile.uid,
+        requesterName: profile.displayName || profile.username || 'Manager',
+        receiverId: colleague.email || colleague.username || colleague.uid,
+        receiverUid: colleague.uid,
+        receiverName: colleague.displayName || colleague.username || 'Target',
+        shiftId: selectedShift.id,
+        shiftDate: selectedShift.date,
+        shiftTime: `${selectedShift.startTime}-${selectedShift.endTime}`,
+        type: 'shift' as const,
+        status: 'pending' as const,
+        createdAt: new Date().toISOString()
+      };
+
+      await addDoc(collection(db, 'swaps'), payload);
+      toast.success("Swap request initiated by manager");
+      setIsSwapDialogOpen(false);
+    } catch (e) {
+      toast.error("Failed to initiate swap");
+    }
+  };
+
   const markNotificationRead = async (id: string) => {
     await updateDoc(doc(db, 'notifications', id), { read: true });
+  };
+
+  const scrambleBreaks = async () => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const shiftsToday = shifts.filter(s => s.date === today);
+    if (shiftsToday.length === 0) {
+      toast.error("No shifts found for today to optimize.");
+      return;
+    }
+
+    try {
+      const batch = writeBatch(db);
+      
+      // 1. Delete existing breaks for today
+      const todayBreaks = breakPlans.filter(b => b.date === today);
+      todayBreaks.forEach(b => {
+        batch.delete(doc(db, 'breakPlans', b.id));
+      });
+
+      // 2. Resource usage tracker (15-min slots from 00:00 to 23:45)
+      // Array of 96 slots (24 hours * 4 slots/hour)
+      const slots = new Array(96).fill(0);
+
+      const getTimeSlotIndex = (timeStr: string) => {
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 4 + Math.floor(m / 15);
+      };
+
+      const getTimeStrFromIndex = (index: number) => {
+        const h = Math.floor(index / 4);
+        const m = (index % 4) * 15;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      };
+
+      // 3. Assign breaks for each shift
+      shiftsToday.forEach(shift => {
+         const def = SHIFT_DEFINITIONS[shift.type as ShiftType];
+         if (!def) return;
+
+         def.breaks.forEach((bDef, bIdx) => {
+            const durationInSlots = Math.ceil(((parseInt(bDef.end.split(':')[0])*60 + parseInt(bDef.end.split(':')[1])) - (parseInt(bDef.start.split(':')[0])*60 + parseInt(bDef.start.split(':')[1]))) / 15);
+            
+            // Define a search window (e.g. +/- 45 mins around standard time)
+            const preferredStartSlot = getTimeSlotIndex(bDef.start);
+            const searchRange = 6; // +/- 1.5 hours
+            
+            let bestStartSlot = -1;
+            let minConflict = 999;
+
+            // Try different offsets randomly to distribute
+            const offsets = Array.from({length: searchRange * 2 + 1}, (_, i) => i - searchRange);
+            // Shuffle offsets
+            for (let i = offsets.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [offsets[i], offsets[j]] = [offsets[j], offsets[i]];
+            }
+
+            for (const offset of offsets) {
+                const testStart = preferredStartSlot + offset;
+                if (testStart < 0 || testStart + durationInSlots >= 96) continue;
+
+                // Check conflict
+                let maxConcurrency = 0;
+                for (let s = testStart; s < testStart + durationInSlots; s++) {
+                    maxConcurrency = Math.max(maxConcurrency, slots[s]);
+                }
+
+                if (maxConcurrency < 3) { // Our "Line Protection" target
+                    bestStartSlot = testStart;
+                    break;
+                }
+                
+                if (maxConcurrency < minConflict) {
+                    minConflict = maxConcurrency;
+                    bestStartSlot = testStart;
+                }
+            }
+
+            if (bestStartSlot !== -1) {
+                // Update tracker
+                for (let s = bestStartSlot; s < bestStartSlot + durationInSlots; s++) {
+                    slots[s]++;
+                }
+
+                const startTime = getTimeStrFromIndex(bestStartSlot);
+                const endTime = getTimeStrFromIndex(bestStartSlot + durationInSlots);
+
+                const breakRef = doc(collection(db, 'breakPlans'));
+                batch.set(breakRef, {
+                    date: today,
+                    employeeId: shift.employeeId,
+                    employeeUid: shift.employeeUid,
+                    employeeName: shift.employeeName,
+                    breakStartTime: startTime,
+                    breakEndTime: endTime,
+                    lastModified: new Date().toISOString(),
+                    reason: `Optimized: ${bDef.label}`
+                });
+            }
+         });
+      });
+
+      await batch.commit();
+      toast.success("Break schedule scrambled & optimized (Max 3/slot)");
+    } catch (e) {
+      console.error(e);
+      toast.error("Optimization failed");
+    }
   };
 
   return (
@@ -283,25 +428,25 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
       <aside className="hd-border-r p-5 flex flex-col gap-8 bg-white/50">
         <div className="space-y-6">
           <div className="space-y-3">
-            <div className="hd-label">Management Console</div>
+            <div className="hd-label">Dispatcher Hub</div>
             <nav className="space-y-1">
               <button 
                 onClick={() => setView('shifts')}
                 className={`w-full flex items-center gap-3 px-3 py-2 text-xs hd-mono font-bold transition-colors ${view === 'shifts' ? 'text-accent bg-accent/5' : 'hover:bg-ink/5'}`}
               >
-                <CalendarIcon className="h-4 w-4" /> SHIFT_LOGS
+                <CalendarIcon className="h-4 w-4" /> Shift Logs
               </button>
               <button 
                 onClick={() => setView('breaks')}
                 className={`w-full flex items-center gap-3 px-3 py-2 text-xs hd-mono font-bold transition-colors ${view === 'breaks' ? 'text-accent bg-accent/5' : 'hover:bg-ink/5'}`}
               >
-                <Clock className="h-4 w-4" /> BREAK_PLANNER
+                <Clock className="h-4 w-4" /> Break Logic
               </button>
               <button 
                 onClick={() => setView('swaps')}
                 className={`w-full flex items-center gap-3 px-3 py-2 text-xs hd-mono font-bold transition-colors ${view === 'swaps' ? 'text-accent bg-accent/5' : 'hover:bg-ink/5'}`}
               >
-                <Users className="h-4 w-4" /> SWAP_REQUESTS
+                <Users className="h-4 w-4" /> Swap Requests
                 {swapRequests.filter(s => s.status === 'pending').length > 0 && (
                   <span className="ml-auto bg-accent text-white px-1.5 py-0.5 text-[9px] rounded-sm">
                     {swapRequests.filter(s => s.status === 'pending').length}
@@ -312,7 +457,7 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
           </div>
 
           <div className="space-y-3">
-            <div className="hd-label">System Operations</div>
+            <div className="hd-label">Administration</div>
             <div className="px-3 space-y-2">
               <input 
                 type="file" 
@@ -326,19 +471,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                 className="w-full rounded-none hd-mono text-[10px] h-8 border-line gap-2"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <Upload className="h-3 w-3" /> IMPORT_EXCEL
+                <Upload className="h-3 w-3" /> IMPORT_SCHEDULE
               </Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-auto pt-4 hd-border-t">
-          <div className="hd-label mb-2">Shift Rules</div>
-          <div className="hd-mono text-[9px] space-y-2 opacity-80 bg-bg p-3 border border-line">
-            <div className="text-accent font-bold">STRICT_LATE_POLICY:</div>
-            <div className="leading-tight text-[8px]">
-              IF PREV_SHIFT == LATE<br/>
-              THEN NEXT_SHIFT MUST == SPECIAL
             </div>
           </div>
         </div>
@@ -359,9 +493,14 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
         <div className="p-6">
           {view === 'shifts' && (
             <div className="space-y-6">
-              <div className="flex justify-end">
+              <div className="flex justify-between items-center bg-bg/30 p-2 hd-border">
+                <div className="flex items-center gap-4">
+                  <Button variant="ghost" size="sm" onClick={() => setCurrentMonth(subDays(currentMonth, 30))} className="hd-mono text-[10px]">PREV</Button>
+                  <span className="hd-mono text-sm font-bold uppercase">{format(currentMonth, 'MMMM yyyy')}</span>
+                  <Button variant="ghost" size="sm" onClick={() => setCurrentMonth(addDays(currentMonth, 30))} className="hd-mono text-[10px]">NEXT</Button>
+                </div>
                 <Button onClick={() => setIsShiftDialogOpen(true)} className="rounded-none hd-mono text-xs gap-2">
-                  <Plus className="h-4 w-4" /> NEW_SHIFT_ENTRY
+                  <Plus className="h-4 w-4" /> NEW_ENTRY
                 </Button>
               </div>
               <div className="hd-border">
@@ -369,15 +508,22 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                   <TableHeader className="bg-bg">
                     <TableRow className="hover:bg-transparent border-line">
                       <TableHead className="hd-label">Employee</TableHead>
+                      <TableHead className="hd-label">Date</TableHead>
                       <TableHead className="hd-label">Type</TableHead>
                       <TableHead className="hd-label">Window</TableHead>
                       <TableHead className="hd-label text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {shifts.map(s => (
+                    {shifts
+                      .filter(s => {
+                        const sDate = new Date(s.date);
+                        return sDate.getMonth() === currentMonth.getMonth() && sDate.getFullYear() === currentMonth.getFullYear();
+                      })
+                      .map(s => (
                       <TableRow key={s.id} className="border-line hover:bg-bg/50">
                         <TableCell className="hd-mono text-xs font-bold">{s.employeeName}</TableCell>
+                        <TableCell className="hd-mono text-[10px] opacity-70">{format(new Date(s.date), 'MMM dd')}</TableCell>
                         <TableCell>
                           <Badge className={`rounded-none uppercase text-[9px] hd-mono ${
                             s.type === 'late' ? 'bg-red-100 text-red-600' : 
@@ -407,58 +553,108 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
           )}
 
           {view === 'breaks' && (
-             <div className="hd-border">
-             <Table>
-               <TableHeader className="bg-bg">
-                 <TableRow className="hover:bg-transparent border-line">
-                   <TableHead className="hd-label">Employee</TableHead>
-                   <TableHead className="hd-label">Time</TableHead>
-                   <TableHead className="hd-label">Note</TableHead>
-                   <TableHead className="hd-label text-right">Date</TableHead>
-                 </TableRow>
-               </TableHeader>
-               <TableBody>
-                 {breakPlans.map(bp => (
-                   <TableRow key={bp.id} className="border-line hover:bg-bg/50">
-                     <TableCell className="hd-mono text-xs font-bold">{bp.employeeName}</TableCell>
-                     <TableCell className="hd-mono text-xs text-accent">{bp.breakStartTime} - {bp.breakEndTime}</TableCell>
-                     <TableCell className="text-xs italic">{bp.reason || 'SOP_STANDSTILL'}</TableCell>
-                     <TableCell className="text-right text-[10px] hd-mono opacity-60">{bp.date}</TableCell>
-                   </TableRow>
-                 ))}
-               </TableBody>
-             </Table>
+             <div className="space-y-4">
+                <div className="flex justify-between items-center bg-accent/5 p-4 hd-border">
+                    <div className="space-y-1">
+                        <div className="hd-mono text-xs font-bold text-accent italic">Automatic Line Balancing v2.4</div>
+                        <div className="text-[10px] opacity-60 uppercase">Constraints: 15m intervals // Max 3 employees / slot</div>
+                    </div>
+                    <Button onClick={scrambleBreaks} variant="outline" className="hd-mono text-[10px] border-accent text-accent hover:bg-accent hover:text-white rounded-none">
+                        SHUFFLE_DAILY_BREAKS
+                    </Button>
+                </div>
+                <div className="hd-border">
+                <Table>
+                  <TableHeader className="bg-bg">
+                    <TableRow className="hover:bg-transparent border-line">
+                      <TableHead className="hd-label">Employee</TableHead>
+                      <TableHead className="hd-label">Time</TableHead>
+                      <TableHead className="hd-label">Note</TableHead>
+                      <TableHead className="hd-label text-right">Date</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {breakPlans
+                      .filter(bp => bp.date === format(new Date(), 'yyyy-MM-dd'))
+                      .map(bp => (
+                      <TableRow key={bp.id} className="border-line hover:bg-bg/50">
+                        <TableCell className="hd-mono text-xs font-bold">{bp.employeeName}</TableCell>
+                        <TableCell className="hd-mono text-xs text-accent">{bp.breakStartTime} - {bp.breakEndTime}</TableCell>
+                        <TableCell className="text-xs italic">{bp.reason || 'Manual Adjustment'}</TableCell>
+                        <TableCell className="text-right text-[10px] hd-mono opacity-60">{bp.date}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
            </div>
           )}
 
           {view === 'swaps' && (
-            <div className="space-y-4">
-              {swapRequests.length === 0 ? (
-                <div className="hd-card text-center py-20 hd-mono text-xs text-muted">NO_PENDING_SWAP_REQUESTS</div>
-              ) : (
-                swapRequests.map(swap => (
-                  <div key={swap.id} className="hd-card flex items-center justify-between border-l-4 border-l-accent">
-                    <div className="space-y-1">
-                      <div className="hd-mono text-xs font-bold uppercase">
-                        {swap.requesterName} <span className="text-muted mx-2">→</span> {swap.receiverName}
+            <div className="space-y-6">
+              <div className="flex justify-between items-center bg-bg/50 p-4 hd-border">
+                <div className="space-y-1">
+                  <div className="hd-label">Swap Protocol</div>
+                  <div className="text-[10px] opacity-60">ADMINISTRATIVE SHIFT TRANSFER</div>
+                </div>
+                <Button onClick={() => setIsSwapDialogOpen(true)} className="rounded-none hd-mono text-xs gap-2">
+                  <Plus className="h-4 w-4" /> INITIATE_SWAP_REQUEST
+                </Button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="hd-label">Awaiting Validation</div>
+                <div className="space-y-2">
+                  {swapRequests.filter(s => s.status === 'accepted').length === 0 ? (
+                    <div className="hd-mono text-[10px] opacity-40 text-center py-8 bg-bg">NO_SWAPS_AWAITING_VALIDATION</div>
+                  ) : (
+                    swapRequests.filter(s => s.status === 'accepted').map(swap => (
+                      <div key={swap.id} className="hd-card flex items-center justify-between border-l-4 border-l-accent p-4">
+                        <div className="space-y-1">
+                          <div className="hd-mono text-xs font-bold uppercase">
+                            {swap.requesterName} <span className="text-muted mx-2">→</span> {swap.receiverName}
+                          </div>
+                          <div className="text-[10px] text-muted uppercase">
+                            SHIFT: {swap.shiftDate} // {swap.shiftTime} // ID: {swap.shiftId}
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => handleApproveSwap(swap)} className="bg-ink text-bg rounded-none hd-mono text-[10px] h-7">
+                            VALIDATE_SWAP
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => {
+                            updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' });
+                            toast.error("Swap request rejected.");
+                          }} className="rounded-none hd-mono text-[10px] h-7 border-line">
+                            REJECT
+                          </Button>
+                        </div>
                       </div>
-                      <div className="text-[10px] text-muted uppercase">
-                        TYPE: {swap.type} // SHIFT_ID: {swap.shiftId} // STATUS: <span className={swap.status === 'accepted' ? 'text-accent font-bold' : ''}>{swap.status}</span>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 opacity-60">
+                <div className="hd-label">Swap History</div>
+                <div className="space-y-2">
+                  {swapRequests.filter(s => s.status !== 'accepted' && s.status !== 'pending').map(swap => (
+                    <div key={swap.id} className="hd-card flex items-center justify-between p-3 border border-line">
+                      <div className="space-y-1">
+                        <div className="hd-mono text-xs font-bold">
+                          {swap.requesterName} → {swap.receiverName}
+                        </div>
+                        <div className="text-[9px] text-muted uppercase">
+                          {swap.shiftDate} // {swap.shiftTime}
+                        </div>
                       </div>
+                      <Badge className={`rounded-none text-[8px] hd-mono ${swap.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {swap.status.toUpperCase()}
+                      </Badge>
                     </div>
-                    {swap.status === 'accepted' && (
-                      <div className="flex gap-2">
-                        <Button size="sm" onClick={() => handleApproveSwap(swap)} className="bg-ink text-bg rounded-none hd-mono text-[10px] h-7">
-                          FINAL_APPROVE
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' })} className="rounded-none hd-mono text-[10px] h-7 border-line">
-                          REJECT
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -573,6 +769,63 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
           </div>
           <DialogFooter>
             <Button onClick={handleAddShift} className="rounded-none hd-mono text-xs">COMMIT_ENTRY</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isSwapDialogOpen} onOpenChange={setIsSwapDialogOpen}>
+        <DialogContent className="rounded-none border-line">
+          <DialogHeader>
+            <DialogTitle className="hd-serif uppercase">Initiate Shift Swap (Admin)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+                <Label className="hd-label">Select Shift to Transfer</Label>
+                <Select onValueChange={(val) => {
+                  const s = shifts.find(x => x.id === val);
+                  setSelectedShift(s || null);
+                }} value={selectedShift?.id}>
+                    <SelectTrigger className="rounded-none hd-mono text-xs border-line bg-bg">
+                        <SelectValue placeholder="CHOOSE_FROM_ALL_SHIFTS" />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-none border-line">
+                        {shifts.filter(s => new Date(s.date) >= new Date()).map(s => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.employeeName}: {format(new Date(s.date), 'MMM dd')} - {s.startTime}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+            {selectedShift && (
+              <div className="p-3 bg-accent/5 border border-accent/20 hd-mono text-[10px] space-y-1">
+                  <div className="font-bold text-accent uppercase">Current Owner: {selectedShift.employeeName}</div>
+                  <div>DATE: {selectedShift.date}</div>
+                  <div>WINDOW: {selectedShift.startTime} - {selectedShift.endTime}</div>
+              </div>
+            )}
+            <div className="space-y-2">
+                <Label className="hd-label">Select Target Employee</Label>
+                <Select onValueChange={setSelectedColleague} value={selectedColleague}>
+                    <SelectTrigger className="rounded-none hd-mono text-xs border-line">
+                        <SelectValue placeholder="SELECT_NEW_OWNER" />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-none border-line">
+                        {employees.filter(e => e.uid !== selectedShift?.employeeUid).map(e => (
+                            <SelectItem key={e.uid} value={e.uid}>{e.displayName || e.username}</SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={handleRequestSwap} 
+              disabled={!selectedShift || !selectedColleague}
+              className="rounded-none hd-mono text-xs w-full bg-ink text-bg disabled:opacity-30"
+            >
+              INITIATE_SWAP_REQUEST
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

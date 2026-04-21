@@ -71,12 +71,15 @@ service cloud.firestore {
     }
 
     function isValidSwap(data) {
-      return data.keys().hasAll(['requesterId', 'receiverId', 'shiftId', 'type', 'status', 'createdAt']) &&
+      return data.keys().hasAll(['requesterId', 'receiverId', 'receiverUid', 'shiftId', 'shiftDate', 'shiftTime', 'type', 'status', 'createdAt']) &&
              data.requesterId is string &&
              data.receiverId is string &&
+             data.receiverUid is string &&
              data.shiftId is string &&
+             data.shiftDate is string &&
+             data.shiftTime is string &&
              data.type in ['shift', 'break'] &&
-             data.status in ['pending', 'approved', 'rejected', 'completed'] &&
+             data.status in ['pending', 'accepted', 'approved', 'rejected', 'completed'] &&
              data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
     }
 
@@ -95,7 +98,7 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isValidUser(request.resource.data) && isOwner(userId) && 
                     (request.resource.data.role == 'employee' || request.resource.data.username == 'Admin' || isAdmin());
       allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
@@ -117,9 +120,9 @@ service cloud.firestore {
     }
 
     match /swaps/{swapId} {
-      allow read: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverId));
+      allow read: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId));
       allow create: if isAuthenticated() && isValidSwap(request.resource.data) && request.auth.uid == request.resource.data.requesterId;
-      allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.receiverId);
+      allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId);
       allow delete: if isAdmin();
     }
 

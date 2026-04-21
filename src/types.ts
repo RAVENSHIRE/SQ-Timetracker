@@ -42,8 +42,11 @@ export interface SwapRequest {
   requesterId: string;
   requesterName: string;
   receiverId: string;
+  receiverUid?: string;
   receiverName: string;
   shiftId: string;
+  shiftDate?: string;
+  shiftTime?: string;
   type: 'shift' | 'break';
   status: 'pending' | 'accepted' | 'approved' | 'rejected' | 'completed';
   createdAt: string;
