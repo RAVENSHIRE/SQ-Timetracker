@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function authSuspended() {
-      return true;
+      return false;
     }
 
     match /{document=**} {
@@ -54,16 +54,18 @@ service cloud.firestore {
 
     function isValidShift(data) {
       return data.keys().hasAll(['employeeId', 'employeeUid', 'date', 'startTime', 'endTime']) &&
-             data.keys().hasOnly(['employeeId', 'employeeUid', 'employeeName', 'date', 'type', 'startTime', 'endTime', 'customerCareRole', 'status']) &&
+             data.keys().hasOnly(['employeeId', 'employeeUid', 'employeeName', 'date', 'type', 'startTime', 'endTime', 'customerCareRole', 'status', 'activeSwapId', 'createdAt']) &&
              data.employeeId is string &&
              data.employeeUid is string &&
              (!('employeeName' in data) || data.employeeName is string) &&
              isIsoDate(data.date) &&
              data.startTime is string &&
              data.endTime is string &&
-             (!('type' in data) || data.type in ['normal', 'second', 'special', 'late']) &&
+             (!('type' in data) || data.type in ['normal', 'second', 'special', 'afternoon', 'late', 'sick', 'holiday', 'military']) &&
              (!('customerCareRole' in data) || data.customerCareRole is string) &&
-             (!('status' in data) || data.status in ['scheduled', 'active', 'complete']);
+             (!('status' in data) || data.status in ['scheduled', 'active', 'complete']) &&
+             (!('activeSwapId' in data) || data.activeSwapId == null || data.activeSwapId is string) &&
+             (!('createdAt' in data) || isIsoDateTime(data.createdAt));
     }
 
     function isValidBreakPlan(data) {
@@ -81,8 +83,9 @@ service cloud.firestore {
     }
 
     function isValidSwap(data) {
-      return data.keys().hasAll(['requesterId', 'receiverId', 'receiverUid', 'shiftId', 'shiftDate', 'shiftTime', 'type', 'status', 'createdAt']) &&
-             data.keys().hasOnly(['requesterId', 'requesterName', 'receiverId', 'receiverUid', 'receiverName', 'shiftId', 'shiftDate', 'shiftTime', 'shiftType', 'targetShiftDate', 'targetShiftTime', 'targetShiftType', 'type', 'status', 'createdAt']) &&
+      return data.keys().hasAll(['requesterUid', 'requesterId', 'receiverId', 'receiverUid', 'shiftId', 'shiftDate', 'shiftTime', 'type', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['requesterUid', 'requesterId', 'requesterName', 'receiverId', 'receiverUid', 'receiverName', 'shiftId', 'shiftDate', 'shiftTime', 'shiftType', 'targetShiftId', 'targetShiftDate', 'targetShiftTime', 'targetShiftType', 'type', 'status', 'createdAt', 'completedAt']) &&
+             data.requesterUid is string &&
              data.requesterId is string &&
              (!('requesterName' in data) || data.requesterName is string) &&
              data.receiverId is string &&
@@ -91,13 +94,15 @@ service cloud.firestore {
              data.shiftId is string &&
              isIsoDate(data.shiftDate) &&
              data.shiftTime is string &&
-             (!('shiftType' in data) || data.shiftType in ['normal', 'second', 'special', 'late']) &&
+             (!('shiftType' in data) || data.shiftType in ['normal', 'second', 'special', 'afternoon', 'late', 'sick', 'holiday', 'military']) &&
+             (!('targetShiftId' in data) || data.targetShiftId == null || data.targetShiftId is string) &&
              (!('targetShiftDate' in data) || data.targetShiftDate == null || isIsoDate(data.targetShiftDate)) &&
              (!('targetShiftTime' in data) || data.targetShiftTime == null || data.targetShiftTime is string) &&
-             (!('targetShiftType' in data) || data.targetShiftType == null || data.targetShiftType in ['normal', 'second', 'special', 'late']) &&
-             data.type in ['shift', 'break'] &&
+             (!('targetShiftType' in data) || data.targetShiftType == null || data.targetShiftType in ['normal', 'second', 'special', 'afternoon', 'late', 'sick', 'holiday', 'military']) &&
+             data.type == 'shift' &&
              data.status in ['pending', 'accepted', 'approved', 'rejected', 'completed'] &&
-             isIsoDateTime(data.createdAt);
+             isIsoDateTime(data.createdAt) &&
+             (!('completedAt' in data) || data.completedAt == null || isIsoDateTime(data.completedAt));
     }
 
     function isValidNotification(data) {
@@ -113,18 +118,16 @@ service cloud.firestore {
 
     function isSwapParticipant() {
       return isAuthenticated() &&
-        (request.auth.uid == resource.data.requesterId ||
-         request.auth.uid == resource.data.receiverUid ||
-         request.auth.token.email == resource.data.receiverId);
-    }
-
-    function onlySwapStatusChanged() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
-        request.resource.data.requesterId == resource.data.requesterId &&
-        request.resource.data.receiverId == resource.data.receiverId &&
+        (request.auth.uid == resource.data.requesterUid ||
+         request.auth.uid == resource.data.receiverUid);, 'completedAt']) &&
+        request.resource.data.requesterUid == resource.data.requesterUid &&
         request.resource.data.receiverUid == resource.data.receiverUid &&
         request.resource.data.shiftId == resource.data.shiftId;
     }
+
+    function receiverCanRespondToSwap() {
+      return isAuthenticated() &&
+        request.auth.uid == resource.data.receiverUid
 
     function receiverCanRespondToSwap() {
       return isAuthenticated() &&
@@ -168,14 +171,21 @@ service cloud.firestore {
     }
 
     match /shifts/{shiftId} {
-      allow get, list: if authSuspended() || isAuthenticated();
-      allow create, update: if (authSuspended() || isManagerOrBootstrap()) && isValidShift(request.resource.data);
-      allow delete: if authSuspended() || isManagerOrBootstrap();
-    }
-
-    match /breakPlans/{planId} {
-      allow get, list: if authSuspended() || isAuthenticated();
-      allow create, update: if (authSuspended() || isManagerOrBootstrap()) && isValidBreakPlan(request.resource.data);
+      // Employees may only read their own shifts.
+      // Managers read all. List queries work when filtered to own uid.
+      allow get: if isAuthenticated() && (isManager() || resource.data.employeeUid == request.auth.uid);
+      allow list: if isAuthenticated() && (isManager() ||
+        ('employeeUid' in request.query.filters && request.query.filters.employeeUid == request.auth.uid));
+      // Only managers may write shifts (employees may update activeSwapId via transaction)
+      allow create: if isManagerOrBootstrap() && isValidShift(request.resource.data);
+      allow update: if (isManagerOrBootstrap() && isValidShift(request.resource.data)) ||
+        // Employees may update only activeSwapId on their own shifts (set by swap transaction)
+        (isAuthenticated()isAuthenticated() && (isManagerOrBootstrap() || isSwapParticipant());
+      allow create: if isValidSwap(request.resource.data) &&
+        isAuthenticated() &&
+        request.auth.uid == request.resource.data.requesterUid;
+      allow update: if receiverCanRespondToSwap() || managerCanModerateSwap();
+      allow delete: ifnded() || isManagerOrBootstrap()) && isValidBreakPlan(request.resource.data);
       allow delete: if authSuspended() || isManagerOrBootstrap();
     }
 

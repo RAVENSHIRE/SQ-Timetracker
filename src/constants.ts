@@ -42,14 +42,51 @@ export const SHIFT_DEFINITIONS: Record<ShiftType, ShiftDefinition> = {
       { start: '16:30', end: '16:45', label: 'Afternoon Break' }
     ]
   },
+  afternoon: {
+    type: 'afternoon',
+    label: 'Afternoon Shift',
+    startTime: '13:30',
+    endTime: '22:00',
+    breaks: [
+      { start: '16:30', end: '17:15', label: 'Main Break' },
+      { start: '19:30', end: '19:45', label: 'Evening Break' }
+    ]
+  },
   late: {
     type: 'late',
-    label: 'Late Shift',
+    label: 'Late Shift (11:30)',
     startTime: '11:30',
     endTime: '22:00',
     breaks: [
       { start: '14:30', end: '15:15', label: 'Main Break' },
       { start: '18:00', end: '18:15', label: 'Evening Break' }
+    ]
+  },
+  sick: {
+    type: 'sick',
+    label: 'Sick Leave',
+    startTime: '08:00',
+    endTime: '17:00',
+    breaks: [
+      { start: '12:00', end: '13:00', label: 'Lunch Break' }
+    ]
+  },
+  holiday: {
+    type: 'holiday',
+    label: 'Holiday',
+    startTime: '08:00',
+    endTime: '17:00',
+    breaks: [
+      { start: '12:00', end: '13:00', label: 'Lunch Break' }
+    ]
+  },
+  military: {
+    type: 'military',
+    label: 'Military Reserve',
+    startTime: '08:00',
+    endTime: '17:00',
+    breaks: [
+      { start: '12:00', end: '13:00', label: 'Lunch Break' }
     ]
   }
 };
