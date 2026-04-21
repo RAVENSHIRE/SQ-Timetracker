@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth, db, microsoftProvider, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User, signInAnonymously } from 'firebase/auth';
+import { onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, User, signInAnonymously } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { UserProfile, UserRole, AppNotification } from './types';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    getRedirectResult(auth).catch((error: any) => {
+      console.error('Redirect auth result error:', error);
+      toast.error(getAuthErrorMessage(error, 'OAuth'));
+    });
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       try {
         setLoading(true);
@@ -117,44 +122,18 @@ export default function App() {
     provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
-      await signInWithPopup(auth, provider);
+      await signInWithRedirect(auth, provider);
     } catch (error: any) {
       console.error("Google login error:", error);
-
-      if (['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(error?.code)) {
-        toast.info(getAuthErrorMessage(error, 'Google'));
-        try {
-          await signInWithRedirect(auth, provider);
-          return;
-        } catch (redirectError: any) {
-          console.error("Google redirect login error:", redirectError);
-          toast.error(getAuthErrorMessage(redirectError, 'Google'));
-          return;
-        }
-      }
-
       toast.error(getAuthErrorMessage(error, 'Google'));
     }
   };
 
   const handleMicrosoftLogin = async () => {
     try {
-      await signInWithPopup(auth, microsoftProvider);
+      await signInWithRedirect(auth, microsoftProvider);
     } catch (error: any) {
       console.error("Microsoft Login error:", error);
-
-      if (['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(error?.code)) {
-        toast.info(getAuthErrorMessage(error, 'Microsoft'));
-        try {
-          await signInWithRedirect(auth, microsoftProvider);
-          return;
-        } catch (redirectError: any) {
-          console.error("Microsoft redirect login error:", redirectError);
-          toast.error(getAuthErrorMessage(redirectError, 'Microsoft'));
-          return;
-        }
-      }
-
       toast.error(getAuthErrorMessage(error, 'Microsoft'));
     }
   };
@@ -367,7 +346,9 @@ export default function App() {
                       if (!user) {
                         toast.info("Testing requires an active session. Authenticating with Google first...");
                         const provider = new GoogleAuthProvider();
-                        await signInWithPopup(auth, provider);
+                        provider.setCustomParameters({ prompt: 'select_account' });
+                        await signInWithRedirect(auth, provider);
+                        return;
                       }
                       setUsername('Admin'); 
                       setPassword('1234'); 
@@ -383,7 +364,9 @@ export default function App() {
                       if (!user) {
                         toast.info("Testing requires an active session. Authenticating with Google first...");
                         const provider = new GoogleAuthProvider();
-                        await signInWithPopup(auth, provider);
+                        provider.setCustomParameters({ prompt: 'select_account' });
+                        await signInWithRedirect(auth, provider);
+                        return;
                       }
                       setUsername('j.doe'); 
                       setPassword('1234'); 
@@ -400,7 +383,9 @@ export default function App() {
                       if (!user) {
                         toast.info("Testing requires an active session. Authenticating with Google first...");
                         const provider = new GoogleAuthProvider();
-                        await signInWithPopup(auth, provider);
+                        provider.setCustomParameters({ prompt: 'select_account' });
+                        await signInWithRedirect(auth, provider);
+                        return;
                       }
                       setUsername('m.rossi'); 
                       setPassword('1234'); 
