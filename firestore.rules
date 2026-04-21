@@ -1,6 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function authSuspended() {
+      return true;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
@@ -137,9 +141,10 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow get, list: if isAuthenticated();
+      allow get, list: if authSuspended() || isAuthenticated();
       allow create: if isValidUser(request.resource.data) &&
         (
+          authSuspended() ||
           (isOwner(userId) &&
            request.resource.data.uid == request.auth.uid &&
            request.resource.data.role in ['employee', 'manager'] &&
@@ -163,38 +168,40 @@ service cloud.firestore {
     }
 
     match /shifts/{shiftId} {
-      allow get, list: if isAuthenticated();
-      allow create, update: if isManagerOrBootstrap() && isValidShift(request.resource.data);
-      allow delete: if isManagerOrBootstrap();
+      allow get, list: if authSuspended() || isAuthenticated();
+      allow create, update: if (authSuspended() || isManagerOrBootstrap()) && isValidShift(request.resource.data);
+      allow delete: if authSuspended() || isManagerOrBootstrap();
     }
 
     match /breakPlans/{planId} {
-      allow get, list: if isAuthenticated();
-      allow create, update: if isManagerOrBootstrap() && isValidBreakPlan(request.resource.data);
-      allow delete: if isManagerOrBootstrap();
+      allow get, list: if authSuspended() || isAuthenticated();
+      allow create, update: if (authSuspended() || isManagerOrBootstrap()) && isValidBreakPlan(request.resource.data);
+      allow delete: if authSuspended() || isManagerOrBootstrap();
     }
 
     match /swaps/{swapId} {
-      allow get, list: if isManagerOrBootstrap() || isSwapParticipant();
+      allow get, list: if authSuspended() || isManagerOrBootstrap() || isSwapParticipant();
       allow create: if isValidSwap(request.resource.data) &&
         (
+          authSuspended() ||
           (isAuthenticated() && request.auth.uid == request.resource.data.requesterId) ||
           isManagerOrBootstrap()
         );
-      allow update: if receiverCanRespondToSwap() || managerCanModerateSwap();
-      allow delete: if isManagerOrBootstrap();
+      allow update: if authSuspended() || receiverCanRespondToSwap() || managerCanModerateSwap();
+      allow delete: if authSuspended() || isManagerOrBootstrap();
     }
 
     match /notifications/{notificationId} {
-      allow get, list: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
-      allow create: if isManagerOrBootstrap() && isValidNotification(request.resource.data);
+      allow get, list: if authSuspended() || (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
+      allow create: if (authSuspended() || isManagerOrBootstrap()) && isValidNotification(request.resource.data);
       allow update: if
+        authSuspended() ||
         (isAuthenticated() &&
          request.auth.uid == resource.data.userId &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
          request.resource.data.read is bool) ||
         isManagerOrBootstrap();
-      allow delete: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
+      allow delete: if authSuspended() || (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
     }
   }
 }

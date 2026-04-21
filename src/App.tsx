@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 
 export default function App() {
+  const AUTH_SUSPENDED = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,13 +27,14 @@ export default function App() {
   const [isLegacySession, setIsLegacySession] = useState(false);
 
   const getAuthErrorMessage = (error: any, providerName: string) => {
+    const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'unknown-host';
     switch (error?.code) {
       case 'auth/popup-blocked':
       case 'auth/popup-closed-by-user':
       case 'auth/cancelled-popup-request':
         return `${providerName} popup was blocked or closed. Trying redirect login...`;
       case 'auth/unauthorized-domain':
-        return `This domain is not authorized for ${providerName} sign-in. Add it in Firebase Auth -> Settings -> Authorized domains.`;
+        return `This domain is not authorized for ${providerName} sign-in. Add '${currentHost}' in Firebase Console (project: gen-lang-client-0139143675) -> Authentication -> Settings -> Authorized domains.`;
       case 'auth/operation-not-allowed':
         return `${providerName} sign-in is not enabled in Firebase Auth -> Sign-in method.`;
       case 'auth/invalid-api-key':
@@ -43,6 +45,22 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (AUTH_SUSPENDED) {
+      setIsLegacySession(true);
+      setUser({ uid: 'auth-suspended', email: 'suspended@local.dev' } as User);
+      setProfile({
+        uid: 'auth-suspended',
+        email: 'suspended@local.dev',
+        username: 'Admin',
+        displayName: 'Auth Suspended Manager',
+        role: 'manager',
+        department: 'Customer Care / Tier 1'
+      });
+      setNotifications([]);
+      setLoading(false);
+      return;
+    }
+
     getRedirectResult(auth).catch((error: any) => {
       console.error('Redirect auth result error:', error);
       toast.error(getAuthErrorMessage(error, 'OAuth'));
@@ -261,6 +279,11 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (AUTH_SUSPENDED) {
+      toast.info('Auth is currently suspended. Logout is disabled.');
+      return;
+    }
+
     try {
       if (isLegacySession) {
         setIsLegacySession(false);

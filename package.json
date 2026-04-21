@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:rules": "firebase emulators:exec --only firestore --project sq-timetracker-rules-test \"node tests/firestore.rules.test.mjs\""
+    "test:rules": "firebase emulators:exec --only firestore --project sq-timetracker-rules-test \"node tests/firestore.rules.test.mjs\"",
+    "auth:bypass:on": "node scripts/set-dev-auth-bypass.mjs on",
+    "auth:bypass:off": "node scripts/set-dev-auth-bypass.mjs off"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
