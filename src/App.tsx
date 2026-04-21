@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth, db, microsoftProvider, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User, signInAnonymously } from 'firebase/auth';
+import { onAuthStateChanged, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User, signInAnonymously } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { UserProfile, UserRole, AppNotification } from './types';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,23 @@ export default function App() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLegacySession, setIsLegacySession] = useState(false);
+
+  const getAuthErrorMessage = (error: any, providerName: string) => {
+    switch (error?.code) {
+      case 'auth/popup-blocked':
+      case 'auth/popup-closed-by-user':
+      case 'auth/cancelled-popup-request':
+        return `${providerName} popup was blocked or closed. Trying redirect login...`;
+      case 'auth/unauthorized-domain':
+        return `This domain is not authorized for ${providerName} sign-in. Add it in Firebase Auth -> Settings -> Authorized domains.`;
+      case 'auth/operation-not-allowed':
+        return `${providerName} sign-in is not enabled in Firebase Auth -> Sign-in method.`;
+      case 'auth/invalid-api-key':
+        return `Firebase API key is invalid. Check firebase-applet-config.json.`;
+      default:
+        return `${providerName} login failed. (${error?.code || 'unknown_error'})`;
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -96,21 +113,49 @@ export default function App() {
   }, [isLegacySession]);
 
   const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+
     try {
-      const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login error:", error);
-      toast.error("Login failed.");
+    } catch (error: any) {
+      console.error("Google login error:", error);
+
+      if (['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(error?.code)) {
+        toast.info(getAuthErrorMessage(error, 'Google'));
+        try {
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectError: any) {
+          console.error("Google redirect login error:", redirectError);
+          toast.error(getAuthErrorMessage(redirectError, 'Google'));
+          return;
+        }
+      }
+
+      toast.error(getAuthErrorMessage(error, 'Google'));
     }
   };
 
   const handleMicrosoftLogin = async () => {
     try {
       await signInWithPopup(auth, microsoftProvider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Microsoft Login error:", error);
-      toast.error("Microsoft Login failed.");
+
+      if (['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(error?.code)) {
+        toast.info(getAuthErrorMessage(error, 'Microsoft'));
+        try {
+          await signInWithRedirect(auth, microsoftProvider);
+          return;
+        } catch (redirectError: any) {
+          console.error("Microsoft redirect login error:", redirectError);
+          toast.error(getAuthErrorMessage(redirectError, 'Microsoft'));
+          return;
+        }
+      }
+
+      toast.error(getAuthErrorMessage(error, 'Microsoft'));
     }
   };
 
