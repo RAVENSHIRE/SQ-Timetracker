@@ -135,9 +135,9 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
         shiftDate: selectedShift.date,
         shiftTime: `${selectedShift.startTime}-${selectedShift.endTime}`,
         shiftType: selectedShift.type,
-        targetShiftDate: selectedTargetShift ? selectedTargetShift.date : 'Shift to be changed! Here Data // Time',
-        targetShiftTime: selectedTargetShift ? `${selectedTargetShift.startTime}-${selectedTargetShift.endTime}` : '',
-        targetShiftType: selectedTargetShift?.type,
+        targetShiftDate: selectedTargetShift ? selectedTargetShift.date : null,
+        targetShiftTime: selectedTargetShift ? `${selectedTargetShift.startTime}-${selectedTargetShift.endTime}` : null,
+        targetShiftType: selectedTargetShift?.type || null,
         type: 'shift' as const,
         status: 'pending' as const,
         createdAt: new Date().toISOString()
@@ -226,8 +226,8 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                       <div className="font-bold uppercase">FROM: {s.requesterName}</div>
                       <div className="font-bold underline">SHIFT: {s.shiftDate} // {s.shiftTime} ({s.shiftType})</div>
                       <div className="opacity-60 uppercase mt-1">TO: You</div>
-                      <div className={(!s.targetShiftDate || s.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'italic opacity-60' : 'font-bold'}>
-                        SHIFT TO BE CHANGED REQ: {(!s.targetShiftDate || s.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${s.targetShiftDate} // ${s.targetShiftTime} (${s.targetShiftType}) !`}
+                      <div className={!s.targetShiftDate ? 'italic opacity-60' : 'font-bold'}>
+                        RETURN SHIFT REQUESTED: {!s.targetShiftDate ? 'None (One-way transfer)' : `${s.targetShiftDate} // ${s.targetShiftTime} (${s.targetShiftType})`}
                       </div>
                     </div>
                     <div className="flex gap-1 pt-1">
@@ -468,8 +468,8 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                                 <div className="font-bold text-accent uppercase">FROM: {swap.requesterName}</div>
                                 <div className="font-bold underline">SHIFT: {swap.shiftDate ? format(parseISO(swap.shiftDate), 'MMM dd') : 'N/A'} // {swap.shiftTime} ({swap.shiftType})</div>
                                 <div className="opacity-40 uppercase mt-1">TO: {profile.displayName || profile.username || 'You'}</div>
-                                <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
-                                  SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                                <div className={!swap.targetShiftDate ? 'opacity-40 italic' : 'font-bold'}>
+                                  RETURN SHIFT REQUESTED: {!swap.targetShiftDate ? 'None (One-way transfer)' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType})`}
                                 </div>
                               </TableCell>
                               <TableCell>
@@ -534,8 +534,8 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                                 <div className="opacity-40 uppercase">FROM: {profile.displayName || profile.username || 'You'}</div>
                                 <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
                                 <div className="font-bold text-accent uppercase mt-1">TO: {swap.receiverName}</div>
-                                <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
-                                  SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                                <div className={!swap.targetShiftDate ? 'opacity-40 italic' : 'font-bold'}>
+                                  RETURN SHIFT REQUESTED: {!swap.targetShiftDate ? 'None (One-way transfer)' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType})`}
                                 </div>
                               </TableCell>
                               <TableCell>
@@ -589,11 +589,11 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                               <TableCell className="opacity-70 space-y-0.5">
                                 <div className="flex items-center gap-1">
                                   <span>{swap.shiftDate} ({swap.shiftType})</span>
-                                  {swap.targetShiftType && (
-                                    <>
-                                      <ArrowLeftRight className="h-2 w-2 opacity-30" />
-                                      <span className="text-accent font-bold">{swap.targetShiftDate} ({swap.targetShiftType})</span>
-                                    </>
+                                  <ArrowLeftRight className="h-2 w-2 opacity-30" />
+                                  {swap.targetShiftDate ? (
+                                    <span className="text-accent font-bold">{swap.targetShiftDate} ({swap.targetShiftType})</span>
+                                  ) : (
+                                    <span className="italic opacity-60">None (One-way transfer)</span>
                                   )}
                                 </div>
                               </TableCell>

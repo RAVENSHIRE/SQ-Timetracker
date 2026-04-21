@@ -12,7 +12,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from 'sonner';
 import { Plus, Trash2, Upload, Calendar as CalendarIcon, Clock, Users, Bell, Check, X, FileSpreadsheet, AlertTriangle, Lock, ShieldCheck, ArrowLeftRight } from 'lucide-react';
 import { format, addDays, subDays } from 'date-fns';
-import * as XLSX from 'xlsx';
 
 interface ManagerDashboardProps {
   profile: UserProfile;
@@ -20,6 +19,72 @@ interface ManagerDashboardProps {
 }
 
 type ViewType = 'shifts' | 'breaks' | 'swaps' | 'team';
+
+const parseCsvRow = (line: string): string[] => {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i++;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      values.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current.trim());
+  return values;
+};
+
+const parseCsv = (csvText: string): Array<Record<string, string>> => {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvRow(lines[0]);
+  return lines.slice(1).map(line => {
+    const values = parseCsvRow(line);
+    const row: Record<string, string> = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index] ?? '';
+    });
+    return row;
+  });
+};
+
+const getValue = (row: Record<string, string>, aliases: string[]): string | undefined => {
+  const normalized = Object.entries(row).reduce<Record<string, string>>((acc, [key, value]) => {
+    acc[key.trim().toLowerCase()] = value;
+    return acc;
+  }, {});
+
+  for (const alias of aliases) {
+    const value = normalized[alias.toLowerCase()];
+    if (value) return value;
+  }
+
+  return undefined;
+};
 
 export default function ManagerDashboard({ profile, notifications }: ManagerDashboardProps) {
   const [view, setView] = useState<ViewType>('shifts');
@@ -82,21 +147,18 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws) as any[];
+        const content = String(evt.target?.result ?? '');
+        const data = parseCsv(content);
 
         const batch = writeBatch(db);
         let importedCount = 0;
         let rejectedCount = 0;
 
         for (const row of data) {
-          const email = row.Email || row.employeeId;
-          const name = row.Name || row.employeeName;
-          const date = row.Date || format(new Date(), 'yyyy-MM-dd');
-          const start = row.Start || row.startTime;
+          const email = getValue(row, ['Email', 'employeeId']);
+          const name = getValue(row, ['Name', 'employeeName']);
+          const date = getValue(row, ['Date']) || format(new Date(), 'yyyy-MM-dd');
+          const start = getValue(row, ['Start', 'startTime']);
           
           // Find employee UID from existing system users
           const employee = employees.find(e => 
@@ -132,8 +194,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
             date,
             type: shiftType,
             startTime: start || SHIFT_DEFINITIONS[shiftType].startTime,
-            endTime: row.End || row.endTime || SHIFT_DEFINITIONS[shiftType].endTime,
-            customerCareRole: row.Role || row.customerCareRole || 'Support',
+            endTime: getValue(row, ['End', 'endTime']) || SHIFT_DEFINITIONS[shiftType].endTime,
+            customerCareRole: getValue(row, ['Role', 'customerCareRole']) || 'Support',
             status: 'scheduled'
           });
 
@@ -162,11 +224,11 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
           toast.success(`Successfully imported ${importedCount} shifts`);
         }
       } catch (error) {
-        console.error("Excel parse error:", error);
-        toast.error("Failed to parse Excel file. Ensure columns: Name, Email, Date, Start, End, Role");
+        console.error("CSV parse error:", error);
+        toast.error("Failed to parse CSV file. Ensure columns: Name, Email, Date, Start, End, Role");
       }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsText(file);
   };
 
   const validateShiftRule = async (employeeId: string, dateStr: string, type: ShiftType): Promise<{ valid: boolean; message?: string }> => {
@@ -475,7 +537,7 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                 ref={fileInputRef} 
                 onChange={handleFileUpload} 
                 className="hidden" 
-                accept=".xlsx, .xls" 
+                accept=".csv" 
               />
               <Button 
                 variant="outline" 
@@ -629,8 +691,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                             <div className="text-accent">FROM: {swap.requesterName}</div>
                             <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
                             <div className="opacity-60 text-muted mt-1">TO: {swap.receiverName}</div>
-                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
-                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            <div className={!swap.targetShiftDate ? 'opacity-40 italic' : 'font-bold'}>
+                              RETURN SHIFT REQUESTED: {!swap.targetShiftDate ? 'None (One-way transfer)' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType})`}
                             </div>
                           </div>
                         </div>
@@ -664,8 +726,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                             <div className="text-accent">FROM: {swap.requesterName}</div>
                             <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
                             <div className="opacity-60 text-muted mt-1">TO: {profile.displayName || profile.username || 'You'}</div>
-                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
-                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            <div className={!swap.targetShiftDate ? 'opacity-40 italic' : 'font-bold'}>
+                              RETURN SHIFT REQUESTED: {!swap.targetShiftDate ? 'None (One-way transfer)' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType})`}
                             </div>
                           </div>
                         </div>
@@ -694,8 +756,8 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                             <div className="text-accent">FROM: {swap.requesterName}</div>
                             <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
                             <div className="opacity-60 text-muted mt-1">TO: {swap.receiverName}</div>
-                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
-                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            <div className={!swap.targetShiftDate ? 'opacity-40 italic' : 'font-bold'}>
+                              RETURN SHIFT REQUESTED: {!swap.targetShiftDate ? 'None (One-way transfer)' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType})`}
                             </div>
                           </div>
                           <div className="text-[8px] text-muted uppercase italic pt-1 border-t border-line/10 mt-1">

@@ -1,48 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: users
-    // Fields:
-    //   - uid: string (required)
-    //   - email: string (required, email format)
-    //   - displayName: string (optional)
-    //   - role: string (required, enum: ['manager', 'employee'])
-    //
-    // Collection: shifts
-    // Fields:
-    //   - employeeId: string (required)
-    //   - employeeName: string (optional)
-    //   - date: string (required, YYYY-MM-DD)
-    //   - startTime: string (required)
-    //   - endTime: string (required)
-    //   - customerCareRole: string (optional)
-    //
-    // Collection: breakPlans
-    // Fields:
-    //   - date: string (required, YYYY-MM-DD)
-    //   - employeeId: string (required)
-    //   - employeeName: string (optional)
-    //   - breakStartTime: string (required)
-    //   - breakEndTime: string (required)
-    //   - lastModified: string (required, ISO 8601)
-    //
-    // ===============================================================
-
-    // ===============================================================
-    // Global Safety Net (Default Deny)
-    // ===============================================================
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -51,107 +13,188 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Auth tokens for anonymous users often don't have email_verified or email.
-    // Managers are verified by their role in the 'users' collection.
+    function isBootstrapAdminEmail() {
+      return isAuthenticated() &&
+        request.auth.token.email == "j.krayenbuehl@gmail.com" &&
+        request.auth.token.email_verified == true;
+    }
+
     function isManager() {
-      return isAuthenticated() && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager';
     }
 
-    function isAdmin() {
-      return isAuthenticated() && 
-        ((request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true) || 
-        isManager());
+    function isManagerOrBootstrap() {
+      return isManager() || isBootstrapAdminEmail();
     }
 
-    function isValidId(id) { 
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    function isIsoDate(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isIsoDateTime(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$');
     }
 
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.keys().hasOnly(['uid', 'email', 'username', 'displayName', 'role', 'department']) &&
              data.uid is string &&
              data.email is string &&
+             (!('username' in data) || data.username is string) &&
+             (!('displayName' in data) || data.displayName is string) &&
+             (!('department' in data) || data.department is string) &&
              data.role in ['manager', 'employee'];
     }
 
     function isValidShift(data) {
       return data.keys().hasAll(['employeeId', 'employeeUid', 'date', 'startTime', 'endTime']) &&
+             data.keys().hasOnly(['employeeId', 'employeeUid', 'employeeName', 'date', 'type', 'startTime', 'endTime', 'customerCareRole', 'status']) &&
              data.employeeId is string &&
              data.employeeUid is string &&
-             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$");
+             (!('employeeName' in data) || data.employeeName is string) &&
+             isIsoDate(data.date) &&
+             data.startTime is string &&
+             data.endTime is string &&
+             (!('type' in data) || data.type in ['normal', 'second', 'special', 'late']) &&
+             (!('customerCareRole' in data) || data.customerCareRole is string) &&
+             (!('status' in data) || data.status in ['scheduled', 'active', 'complete']);
     }
 
     function isValidBreakPlan(data) {
       return data.keys().hasAll(['date', 'employeeId', 'employeeUid', 'breakStartTime', 'breakEndTime']) &&
-             data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
-             data.employeeUid is string;
+             data.keys().hasOnly(['date', 'employeeId', 'employeeUid', 'employeeName', 'breakStartTime', 'breakEndTime', 'lastModified', 'originalTime', 'reason']) &&
+             isIsoDate(data.date) &&
+             data.employeeId is string &&
+             data.employeeUid is string &&
+             (!('employeeName' in data) || data.employeeName is string) &&
+             data.breakStartTime is string &&
+             data.breakEndTime is string &&
+             (!('lastModified' in data) || isIsoDateTime(data.lastModified)) &&
+             (!('originalTime' in data) || data.originalTime is string) &&
+             (!('reason' in data) || data.reason is string);
     }
 
     function isValidSwap(data) {
       return data.keys().hasAll(['requesterId', 'receiverId', 'receiverUid', 'shiftId', 'shiftDate', 'shiftTime', 'type', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['requesterId', 'requesterName', 'receiverId', 'receiverUid', 'receiverName', 'shiftId', 'shiftDate', 'shiftTime', 'shiftType', 'targetShiftDate', 'targetShiftTime', 'targetShiftType', 'type', 'status', 'createdAt']) &&
              data.requesterId is string &&
+             (!('requesterName' in data) || data.requesterName is string) &&
              data.receiverId is string &&
              data.receiverUid is string &&
+             (!('receiverName' in data) || data.receiverName is string) &&
              data.shiftId is string &&
-             data.shiftDate is string &&
+             isIsoDate(data.shiftDate) &&
              data.shiftTime is string &&
+             (!('shiftType' in data) || data.shiftType in ['normal', 'second', 'special', 'late']) &&
+             (!('targetShiftDate' in data) || data.targetShiftDate == null || isIsoDate(data.targetShiftDate)) &&
+             (!('targetShiftTime' in data) || data.targetShiftTime == null || data.targetShiftTime is string) &&
+             (!('targetShiftType' in data) || data.targetShiftType == null || data.targetShiftType in ['normal', 'second', 'special', 'late']) &&
              data.type in ['shift', 'break'] &&
              data.status in ['pending', 'accepted', 'approved', 'rejected', 'completed'] &&
-             data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+             isIsoDateTime(data.createdAt);
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.keys().hasOnly(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
              data.userId is string &&
              data.title is string &&
              data.message is string &&
              data.type in ['info', 'warning', 'success'] &&
              data.read is bool &&
-             data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+             isIsoDateTime(data.createdAt);
     }
 
-    // ===============================================================
-    // Rules
-    // ===============================================================
+    function isSwapParticipant() {
+      return isAuthenticated() &&
+        (request.auth.uid == resource.data.requesterId ||
+         request.auth.uid == resource.data.receiverUid ||
+         request.auth.token.email == resource.data.receiverId);
+    }
+
+    function onlySwapStatusChanged() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+        request.resource.data.requesterId == resource.data.requesterId &&
+        request.resource.data.receiverId == resource.data.receiverId &&
+        request.resource.data.receiverUid == resource.data.receiverUid &&
+        request.resource.data.shiftId == resource.data.shiftId;
+    }
+
+    function receiverCanRespondToSwap() {
+      return isAuthenticated() &&
+        (request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId) &&
+        resource.data.status == 'pending' &&
+        request.resource.data.status in ['accepted', 'rejected'] &&
+        onlySwapStatusChanged();
+    }
+
+    function managerCanModerateSwap() {
+      return isManagerOrBootstrap() &&
+        request.resource.data.status in ['completed', 'approved', 'rejected'] &&
+        onlySwapStatusChanged();
+    }
 
     match /users/{userId} {
       allow get, list: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidUser(request.resource.data) && isOwner(userId) && 
-                    (request.resource.data.role == 'employee' || request.resource.data.username == 'Admin' || isAdmin());
-      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
+      allow create: if isValidUser(request.resource.data) &&
+        (
+          (isOwner(userId) &&
+           request.resource.data.uid == request.auth.uid &&
+           request.resource.data.role in ['employee', 'manager'] &&
+           (
+             request.resource.data.role == 'employee' ||
+             isBootstrapAdminEmail()
+           )) ||
+          isManagerOrBootstrap()
+        );
+      allow update: if isValidUser(request.resource.data) &&
+        (
+          isManagerOrBootstrap() ||
+          (
+            isOwner(userId) &&
+            request.resource.data.uid == resource.data.uid &&
+            request.resource.data.email == resource.data.email &&
+            request.resource.data.role == resource.data.role
+          )
+        );
+      allow delete: if isManagerOrBootstrap();
     }
 
     match /shifts/{shiftId} {
-      // Team Plan visibility: Allow all authenticated staff to list/get shifts
       allow get, list: if isAuthenticated();
-      allow create, update: if isAdmin() && isValidShift(request.resource.data);
-      allow delete: if isAdmin();
+      allow create, update: if isManagerOrBootstrap() && isValidShift(request.resource.data);
+      allow delete: if isManagerOrBootstrap();
     }
 
     match /breakPlans/{planId} {
-      // Team break visibility
-      allow get, list: if isAuthenticated(); 
-      allow create, update: if isAdmin() && isValidBreakPlan(request.resource.data);
-      allow delete: if isAdmin();
+      allow get, list: if isAuthenticated();
+      allow create, update: if isManagerOrBootstrap() && isValidBreakPlan(request.resource.data);
+      allow delete: if isManagerOrBootstrap();
     }
 
     match /swaps/{swapId} {
-      // Standard swapping flow: Allow relational access
-      allow get: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId));
-      allow list: if isAdmin() || (isAuthenticated() && (resource.data.requesterId == request.auth.uid || resource.data.receiverUid == request.auth.uid || resource.data.receiverId == request.auth.token.email));
-      allow create: if (isAuthenticated() && isValidSwap(request.resource.data) && request.auth.uid == request.resource.data.requesterId) || isAdmin();
-      allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId);
-      allow delete: if isAdmin();
+      allow get, list: if isManagerOrBootstrap() || isSwapParticipant();
+      allow create: if isValidSwap(request.resource.data) &&
+        (
+          (isAuthenticated() && request.auth.uid == request.resource.data.requesterId) ||
+          isManagerOrBootstrap()
+        );
+      allow update: if receiverCanRespondToSwap() || managerCanModerateSwap();
+      allow delete: if isManagerOrBootstrap();
     }
 
     match /notifications/{notificationId} {
-      allow get: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isAdmin();
-      allow list: if (isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin();
-      allow create: if isAdmin() && isValidNotification(request.resource.data);
-      allow update: if (isAuthenticated() && request.auth.uid == resource.data.userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) || isAdmin();
-      allow delete: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isAdmin();
+      allow get, list: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
+      allow create: if isManagerOrBootstrap() && isValidNotification(request.resource.data);
+      allow update: if
+        (isAuthenticated() &&
+         request.auth.uid == resource.data.userId &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
+         request.resource.data.read is bool) ||
+        isManagerOrBootstrap();
+      allow delete: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isManagerOrBootstrap();
     }
   }
 }

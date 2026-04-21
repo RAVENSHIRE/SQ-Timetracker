@@ -48,9 +48,9 @@ export interface SwapRequest {
   shiftDate?: string;
   shiftTime?: string;
   shiftType?: ShiftType;
-  targetShiftDate?: string;
-  targetShiftTime?: string;
-  targetShiftType?: ShiftType;
+  targetShiftDate?: string | null;
+  targetShiftTime?: string | null;
+  targetShiftType?: ShiftType | null;
   type: 'shift' | 'break';
   status: 'pending' | 'accepted' | 'approved' | 'rejected' | 'completed';
   createdAt: string;
