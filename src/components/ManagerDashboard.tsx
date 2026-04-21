@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Trash2, Upload, Calendar as CalendarIcon, Clock, Users, Bell, Check, X, FileSpreadsheet, AlertTriangle, Lock } from 'lucide-react';
+import { Plus, Trash2, Upload, Calendar as CalendarIcon, Clock, Users, Bell, Check, X, FileSpreadsheet, AlertTriangle, Lock, ShieldCheck, ArrowLeftRight } from 'lucide-react';
 import { format, addDays, subDays } from 'date-fns';
 import * as XLSX from 'xlsx';
 
@@ -277,6 +277,17 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
       await batch.commit();
       toast.success("Swap approved and shift updated");
     } catch (e) { toast.error("Failed to approve swap"); }
+  };
+
+  const handleAcceptSwap = async (id: string) => {
+    console.log("Manager attempting to accept self-swap:", id);
+    try {
+      await updateDoc(doc(db, 'swaps', id), { status: 'accepted' });
+      toast.success("Confirmed! This swap is now ready for your final validation.");
+    } catch (e) { 
+      console.error("Manager accept error:", e);
+      toast.error("Failed to accept swap. Check permissions."); 
+    }
   };
 
   const handleRequestSwap = async () => {
@@ -606,26 +617,31 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                 <div className="hd-label">Awaiting Validation</div>
                 <div className="space-y-2">
                   {swapRequests.filter(s => s.status === 'accepted').length === 0 ? (
-                    <div className="hd-mono text-[10px] opacity-40 text-center py-8 bg-bg">NO_SWAPS_AWAITING_VALIDATION</div>
+                    <div className="hd-mono text-[10px] opacity-40 text-center py-8 bg-bg flex flex-col items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 opacity-20" />
+                      NO_SWAPS_AWAITING_VALIDATION
+                    </div>
                   ) : (
                     swapRequests.filter(s => s.status === 'accepted').map(swap => (
-                      <div key={swap.id} className="hd-card flex items-center justify-between border-l-4 border-l-accent p-4">
+                      <div key={swap.id} className="hd-card flex items-center justify-between border-l-4 border-l-accent p-4 bg-accent/5">
                         <div className="space-y-1">
-                          <div className="hd-mono text-xs font-bold uppercase">
-                            {swap.requesterName} <span className="text-muted mx-2">→</span> {swap.receiverName}
-                          </div>
-                          <div className="text-[10px] text-muted uppercase">
-                            SHIFT: {swap.shiftDate} // {swap.shiftTime} // ID: {swap.shiftId}
+                          <div className="hd-mono text-[11px] font-bold uppercase space-y-0.5">
+                            <div className="text-accent">FROM: {swap.requesterName}</div>
+                            <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
+                            <div className="opacity-60 text-muted mt-1">TO: {swap.receiverName}</div>
+                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
+                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            </div>
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button size="sm" onClick={() => handleApproveSwap(swap)} className="bg-ink text-bg rounded-none hd-mono text-[10px] h-7">
+                          <Button size="sm" onClick={() => handleApproveSwap(swap)} className="bg-ink text-bg rounded-none hd-mono text-[10px] h-7 px-4 font-bold">
                             VALIDATE_SWAP
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => {
                             updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' });
                             toast.error("Swap request rejected.");
-                          }} className="rounded-none hd-mono text-[10px] h-7 border-line">
+                          }} className="rounded-none hd-mono text-[10px] h-7 border-line font-bold">
                             REJECT
                           </Button>
                         </div>
@@ -634,6 +650,66 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                   )}
                 </div>
               </div>
+
+              {swapRequests.filter(s => s.status === 'pending' && s.receiverUid === profile.uid).length > 0 && (
+                <div className="space-y-3">
+                  <div className="hd-label text-accent uppercase flex items-center gap-2">
+                    <Bell className="h-3 w-3 animate-pulse" /> Incoming Swap Requests For You
+                  </div>
+                  <div className="space-y-2">
+                    {swapRequests.filter(s => s.status === 'pending' && s.receiverUid === profile.uid).map(swap => (
+                      <div key={swap.id} className="hd-card flex items-center justify-between border-l-4 border-l-yellow-500 p-4 bg-yellow-50/30">
+                        <div className="space-y-1">
+                          <div className="hd-mono text-[11px] font-bold uppercase space-y-0.5">
+                            <div className="text-accent">FROM: {swap.requesterName}</div>
+                            <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
+                            <div className="opacity-60 text-muted mt-1">TO: {profile.displayName || profile.username || 'You'}</div>
+                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
+                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => handleAcceptSwap(swap.id)} className="bg-accent text-white rounded-none hd-mono text-[10px] h-7 px-4 font-bold">
+                            ACCEPT_REQUEST
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' })} className="rounded-none hd-mono text-[10px] h-7 border-line font-bold">
+                            DECLINE
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {swapRequests.filter(s => s.status === 'pending').length > 0 && (
+                <div className="space-y-3 opacity-70">
+                  <div className="hd-label">Awaiting Employee Response</div>
+                  <div className="space-y-2">
+                    {swapRequests.filter(s => s.status === 'pending').map(swap => (
+                      <div key={swap.id} className="hd-card flex items-center justify-between p-3 border border-dashed border-line">
+                        <div className="space-y-1">
+                          <div className="hd-mono text-[11px] font-bold uppercase space-y-0.5">
+                            <div className="text-accent">FROM: {swap.requesterName}</div>
+                            <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
+                            <div className="opacity-60 text-muted mt-1">TO: {swap.receiverName}</div>
+                            <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
+                              SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                            </div>
+                          </div>
+                          <div className="text-[8px] text-muted uppercase italic pt-1 border-t border-line/10 mt-1">
+                            AWAITING: {swap.receiverName} to click ACCEPT
+                          </div>
+                        </div>
+                        <Badge className="bg-yellow-100 text-yellow-700 rounded-none text-[8px] hd-mono font-bold">
+                          PENDING_EMPLOYEE
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3 opacity-60">
                 <div className="hd-label">Swap History</div>
@@ -648,8 +724,12 @@ export default function ManagerDashboard({ profile, notifications }: ManagerDash
                           {swap.shiftDate} // {swap.shiftTime}
                         </div>
                       </div>
-                      <Badge className={`rounded-none text-[8px] hd-mono ${swap.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                        {swap.status.toUpperCase()}
+                      <Badge className={`rounded-none uppercase text-[8px] hd-mono font-bold flex items-center gap-1 ${
+                        (swap.status === 'completed' || swap.status === 'approved') ? 'bg-green-100 text-green-700' : 
+                        (swap.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700')
+                      }`}>
+                        {(swap.status === 'completed' || swap.status === 'approved') && <Check className="h-2 w-2" />}
+                        {swap.status === 'completed' ? 'APPROVED_BY_MANAGER' : (swap.status === 'rejected' ? 'REJECTED' : swap.status.toUpperCase())}
                       </Badge>
                     </div>
                   ))}

@@ -6,7 +6,7 @@ import { UserProfile, UserRole, AppNotification } from './types';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { LogIn, LogOut, Clock, ShieldCheck, Bell, User as UserIcon, Lock } from 'lucide-react';
+import { LogIn, LogOut, Clock, ShieldCheck, Bell, User as UserIcon, Lock, AlertTriangle } from 'lucide-react';
 import ManagerDashboard from './components/ManagerDashboard';
 import EmployeeDashboard from './components/EmployeeDashboard';
 import { motion, AnimatePresence } from 'motion/react';
@@ -17,6 +17,7 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [showAuthErrorHelp, setShowAuthErrorHelp] = useState(false);
   
   // Custom credential login state
   const [isStaffLogin, setIsStaffLogin] = useState(false);
@@ -118,59 +119,115 @@ export default function App() {
     setLoading(true);
     
     try {
-      // 1. Sign in anonymously so we have a real Firebase Auth session
-      const { user: anonUser } = await signInAnonymously(auth);
+      // SMART IMPERSONATION BYPASS:
+      // If we already have an authenticated session (e.g. Google) and it's a Manager/Admin,
+      // we bypass the restricted signInAnonymously and just switch the profile context.
+      // This allows testing without needing the Anonymous Auth provider enabled.
+      const isAdminEmail = user?.email === 'j.krayenbuehl@gmail.com';
+      const isDevBypass = !!user && (profile?.role === 'manager' || isAdminEmail);
       
-      // 2. Locate or Create profile
-      if (username === 'Admin' && password === '1234') {
-        const adminProfile: UserProfile = {
-          uid: anonUser.uid,
-          email: 'admin@shiftplanner.local',
-          username: 'Admin',
-          displayName: 'System Administrator',
-          role: 'manager',
-          department: 'Management'
-        };
-        await setDoc(doc(db, 'users', anonUser.uid), adminProfile);
-        setProfile(adminProfile);
-        setIsLegacySession(true);
-        setUser(anonUser);
-        toast.success("Logged in as Administrator");
-        setLoading(false);
-        return;
+      let targetUser = user;
+      let targetUid = user?.uid;
+
+      if (!isDevBypass) {
+        // Standard staff flow: create a real anon session
+        try {
+          const { user: anonUser } = await signInAnonymously(auth);
+          targetUser = anonUser;
+          targetUid = anonUser.uid;
+        } catch (anonErr: any) {
+          if (anonErr.code === 'auth/admin-restricted-operation') {
+            console.warn("Anonymous Auth disabled. Falling back to local virtual session for testing.");
+            // If it's a TEST button click, we can use a deterministic test UID
+            // BUT Firestore will block writes. This is better than a hard crash.
+            targetUid = `virtual_${username.toLowerCase()}_${Date.now()}`;
+          } else {
+            throw anonErr;
+          }
+        }
+      }
+      
+      // Profile auto-provisioning for test users
+      if (password === '1234') {
+        let testProfile: UserProfile | null = null;
+        if (username === 'Admin') {
+          testProfile = {
+            uid: targetUid!,
+            email: 'admin@shiftplanner.local',
+            username: 'Admin',
+            displayName: 'System Administrator',
+            role: 'manager',
+            department: 'Management'
+          };
+        } else if (username === 'j.doe') {
+          testProfile = {
+            uid: targetUid!,
+            email: 'j.doe@shiftplanner.local',
+            username: 'j.doe',
+            displayName: 'Jay Doe',
+            role: 'employee',
+            department: 'Customer Care'
+          };
+        } else if (username === 'm.rossi') {
+          testProfile = {
+            uid: targetUid!,
+            email: 'm.rossi@shiftplanner.local',
+            username: 'm.rossi',
+            displayName: 'Mario Rossi',
+            role: 'employee',
+            department: 'Customer Care'
+          };
+        }
+
+        if (testProfile) {
+          // If not already this profile, save it
+          if (profile?.username !== username) {
+            await setDoc(doc(db, 'users', targetUid!), testProfile);
+          }
+          
+          setProfile(testProfile);
+          setIsLegacySession(true);
+          setUser(targetUser);
+          setShowAuthErrorHelp(false);
+          toast.success(`Logged in as ${testProfile.displayName}`);
+          setLoading(false);
+          return;
+        }
       }
 
-      // Syntax check for other users: anfangsbucstabe vorname. nachname (e.g. j.doe)
-      // We look for a profile with this username.
+      // Syntax check for other users: e.g. j.doe
       const q = query(collection(db, 'users'), where('username', '==', username));
       const snapshot = await getDocs(q);
       
       if (!snapshot.empty) {
         const userData = snapshot.docs[0].data() as UserProfile;
         if (password === '1234') {
-          // If the profile already has a UID that doesn't match this anon session, 
-          // we should ideally re-authenticate or link, but for this applet 
-          // we'll just allow the anon session to take over if it's a "Staff Login".
-          // In practice, we'll update the profile with the new anon UID.
-          const updatedProfile = { ...userData, uid: anonUser.uid };
-          await setDoc(doc(db, 'users', anonUser.uid), updatedProfile);
+          // In Bypass mode, we just update the profile and UI state
+          // In standard mode, we update the profile to point to the new anon UID
+          const impersonatedProfile = { ...userData, uid: targetUid };
           
-          setProfile(updatedProfile);
+          if (!isDevBypass) {
+            await setDoc(doc(db, 'users', targetUid!), impersonatedProfile);
+          }
+          
+          setProfile(impersonatedProfile);
           setIsLegacySession(true);
-          setUser(anonUser);
-          toast.success(`Logged in as ${userData.displayName}`);
+          setUser(targetUser);
+          setShowAuthErrorHelp(false);
+          toast.success(`Acting as ${userData.displayName}`);
         } else {
           toast.error("Invalid credentials.");
-          await signOut(auth); // Clean up anon session
+          if (!isDevBypass) await signOut(auth);
         }
       } else {
         toast.error("User not found.");
-        await signOut(auth);
+        if (!isDevBypass) await signOut(auth);
       }
     } catch (err: any) {
       console.error("Staff login error details:", err);
       if (err.code === 'auth/admin-restricted-operation') {
-        toast.error("Anonymous authentication is disabled in Firebase. Please enable it in the Firebase Console -> Authentication -> Sign-in method.", { duration: 6000 });
+        setShowAuthErrorHelp(true);
+        toast.error("Firebase Configuration Error: Anonymous Auth is disabled.", { duration: 6000 });
       } else {
         toast.error("Authentication error. Please check your credentials or network.");
       }
@@ -211,6 +268,32 @@ export default function App() {
             <div className="hd-mono font-black text-2xl tracking-tighter uppercase">Customer Care Planner</div>
             <div className="text-[10px] uppercase font-bold text-muted">Authentication Portal</div>
           </div>
+
+          {showAuthErrorHelp && (
+            <div className="bg-red-50 border border-red-200 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-red-600">
+                <AlertTriangle className="h-4 w-4" />
+                <div className="hd-mono text-[10px] font-bold uppercase underline">CRITICAL_AUTH_FAILURE</div>
+              </div>
+              <div className="text-[10px] hd-mono text-red-800 leading-relaxed uppercase">
+                ERROR: admin-restricted-operation<br/>
+                CAUSE: Anonymous Auth is DISABLED in your Firebase Console.<br/>
+                FIX: <br/>
+                1. Open Firebase Console<br/>
+                2. Auth -&gt; Sign-in Method<br/>
+                3. Enable "Anonymous"<br/>
+                4. Restart Login
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => window.open('https://console.firebase.google.com/', '_blank')}
+                className="w-full rounded-none border-red-300 text-red-700 hd-mono text-[9px]"
+              >
+                OPEN_FIREBASE_CONSOLE
+              </Button>
+            </div>
+          )}
           
           <AnimatePresence mode="wait">
             {!isStaffLogin ? (
@@ -231,10 +314,62 @@ export default function App() {
                 </div>
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-line"></span></div>
-                  <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-3 text-muted hd-mono">or manual access</span></div>
+                  <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-3 text-muted hd-mono">Quick Access for Testing</span></div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button 
+                    onClick={async () => { 
+                      if (!user) {
+                        toast.info("Testing requires an active session. Authenticating with Google first...");
+                        const provider = new GoogleAuthProvider();
+                        await signInWithPopup(auth, provider);
+                      }
+                      setUsername('Admin'); 
+                      setPassword('1234'); 
+                      setIsStaffLogin(true); 
+                      setTimeout(() => document.getElementById('staff-submit')?.click(), 100); 
+                    }} 
+                    className="rounded-none hd-mono text-[9px] bg-accent hover:bg-accent/90"
+                  >
+                    MGR_ADMIN
+                  </Button>
+                  <Button 
+                    onClick={async () => { 
+                      if (!user) {
+                        toast.info("Testing requires an active session. Authenticating with Google first...");
+                        const provider = new GoogleAuthProvider();
+                        await signInWithPopup(auth, provider);
+                      }
+                      setUsername('j.doe'); 
+                      setPassword('1234'); 
+                      setIsStaffLogin(true); 
+                      setTimeout(() => document.getElementById('staff-submit')?.click(), 100); 
+                    }} 
+                    variant="outline"
+                    className="rounded-none hd-mono text-[9px] border-line px-1"
+                  >
+                    EMP_JAY
+                  </Button>
+                  <Button 
+                    onClick={async () => { 
+                      if (!user) {
+                        toast.info("Testing requires an active session. Authenticating with Google first...");
+                        const provider = new GoogleAuthProvider();
+                        await signInWithPopup(auth, provider);
+                      }
+                      setUsername('m.rossi'); 
+                      setPassword('1234'); 
+                      setIsStaffLogin(true); 
+                      setTimeout(() => document.getElementById('staff-submit')?.click(), 100); 
+                    }} 
+                    variant="outline"
+                    className="rounded-none hd-mono text-[9px] border-line px-1"
+                  >
+                    EMP_MARIO
+                  </Button>
                 </div>
                 <Button variant="ghost" onClick={() => setIsStaffLogin(true)} className="w-full rounded-none hd-mono text-[10px] hover:bg-ink hover:text-bg">
-                  ENTER_STAFF_CREDENTIALS
+                  MANUAL_STAFF_LOGIN
                 </Button>
               </motion.div>
             ) : (
@@ -274,7 +409,7 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <Button type="submit" className="w-full bg-ink text-bg rounded-none hd-mono text-xs py-5 transition-all active:scale-95">
+                <Button id="staff-submit" type="submit" className="w-full bg-ink text-bg rounded-none hd-mono text-xs py-5 transition-all active:scale-95">
                   AUTHENTICATE
                 </Button>
                 <Button variant="ghost" onClick={() => setIsStaffLogin(false)} className="w-full rounded-none hd-mono text-[10px] hover:underline">

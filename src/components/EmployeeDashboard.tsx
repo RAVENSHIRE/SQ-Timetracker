@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
-import { Calendar, Clock, Coffee, Info, Bell, ArrowLeftRight, FileText, UserIcon, Plus } from 'lucide-react';
+import { Calendar, Clock, Coffee, Info, Bell, ArrowLeftRight, FileText, UserIcon, Plus, Check, ShieldCheck } from 'lucide-react';
 import { format, isAfter, parseISO, addMinutes, subDays, addDays } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -18,9 +18,11 @@ interface EmployeeDashboardProps {
 }
 
 type EmployeeView = 'schedule' | 'plan' | 'swaps';
+type SwapSubView = 'incoming' | 'outgoing' | 'history';
 
 export default function EmployeeDashboard({ profile, notifications }: EmployeeDashboardProps) {
   const [view, setView] = useState<EmployeeView>('schedule');
+  const [swapSubView, setSwapSubView] = useState<SwapSubView>('incoming');
   const [myShifts, setMyShifts] = useState<Shift[]>([]);
   const [allShifts, setAllShifts] = useState<Shift[]>([]);
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -31,6 +33,7 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
   const [isSwapDialogOpen, setIsSwapDialogOpen] = useState(false);
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
   const [selectedColleague, setSelectedColleague] = useState<string>('');
+  const [selectedTargetShift, setSelectedTargetShift] = useState<Shift | null>(null);
   const today = format(new Date(), 'yyyy-MM-dd');
 
   useEffect(() => {
@@ -120,7 +123,7 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
     }
 
     try {
-      console.log("Initiating swap transfer...", { shift: selectedShift, target: selectedColleague });
+      console.log("Initiating swap transfer...", { shift: selectedShift, target: selectedColleague, exchange: selectedTargetShift });
       
       const payload = {
         requesterId: profile.uid,
@@ -131,6 +134,10 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
         shiftId: selectedShift.id,
         shiftDate: selectedShift.date,
         shiftTime: `${selectedShift.startTime}-${selectedShift.endTime}`,
+        shiftType: selectedShift.type,
+        targetShiftDate: selectedTargetShift ? selectedTargetShift.date : 'Shift to be changed! Here Data // Time',
+        targetShiftTime: selectedTargetShift ? `${selectedTargetShift.startTime}-${selectedTargetShift.endTime}` : '',
+        targetShiftType: selectedTargetShift?.type,
         type: 'shift' as const,
         status: 'pending' as const,
         createdAt: new Date().toISOString()
@@ -147,10 +154,12 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
   };
 
   const handleAcceptSwap = async (swap: SwapRequest) => {
+    console.log("Attempting to accept swap:", swap.id);
     try {
       await updateDoc(doc(db, 'swaps', swap.id), { status: 'accepted' });
-      toast.success("Request accepted. Waiting for manager approval.");
+      toast.success("AGREED! Request moved to manager validation queue.");
     } catch (e) { 
+      console.error("Accept swap error:", e);
       handleFirestoreError(e, OperationType.UPDATE, 'swaps');
     }
   };
@@ -203,14 +212,27 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
 
           {incomingSwaps.filter(s => s.status === 'pending').length > 0 && (
             <div className="space-y-3">
-              <div className="hd-label text-accent">Pending Swap Requests</div>
+              <div className="hd-label text-accent uppercase flex items-center gap-2">
+                <Bell className="h-3 w-3 animate-bounce" /> Action Required: Swap Requests
+              </div>
               <div className="space-y-2">
                 {incomingSwaps.filter(s => s.status === 'pending').map(s => (
-                  <div key={s.id} className="hd-card p-2 text-[10px] hd-mono space-y-2">
-                    <div>FROM: {s.requesterName}</div>
-                    <div className="flex gap-1">
-                      <Button size="sm" onClick={() => handleAcceptSwap(s)} className="h-6 px-2 text-[9px] rounded-none">APPROVE</Button>
-                      <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', s.id), { status: 'rejected' })} className="h-6 px-2 text-[9px] rounded-none border-line">DENY</Button>
+                  <div key={s.id} className="hd-card p-3 text-[10px] hd-mono space-y-3 bg-yellow-50 border-l-4 border-l-yellow-600">
+                    <div className="flex justify-between items-start">
+                      <div className="font-bold">FROM: {s.requesterName}</div>
+                      <Badge className="bg-yellow-200 text-yellow-900 border border-yellow-400 text-[8px] h-4 rounded-none uppercase font-bold">PENDING</Badge>
+                    </div>
+                    <div className="opacity-70 leading-tight space-y-0.5">
+                      <div className="font-bold uppercase">FROM: {s.requesterName}</div>
+                      <div className="font-bold underline">SHIFT: {s.shiftDate} // {s.shiftTime} ({s.shiftType})</div>
+                      <div className="opacity-60 uppercase mt-1">TO: You</div>
+                      <div className={(!s.targetShiftDate || s.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'italic opacity-60' : 'font-bold'}>
+                        SHIFT TO BE CHANGED REQ: {(!s.targetShiftDate || s.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${s.targetShiftDate} // ${s.targetShiftTime} (${s.targetShiftType}) !`}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 pt-1">
+                      <Button size="sm" onClick={() => handleAcceptSwap(s)} className="h-7 px-2 text-[9px] rounded-none bg-ink text-bg font-bold">ACCEPT</Button>
+                      <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', s.id), { status: 'rejected' })} className="h-7 px-2 text-[9px] rounded-none border-line font-bold">REJECT</Button>
                     </div>
                   </div>
                 ))}
@@ -265,7 +287,7 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {view === 'schedule' && (
+            {(view === 'schedule' || view === 'swaps') && (
               <Button 
                 onClick={() => { 
                   setSelectedShift(null); 
@@ -314,6 +336,23 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                     </div>
                     <div className="flex items-center gap-4">
                       {s.date === today && <div className="text-[10px] hd-mono uppercase text-accent font-bold">Today</div>}
+                      {(() => {
+                        const activeSwap = [...mySwaps, ...incomingSwaps].find(sw => sw.shiftId === s.id && (sw.status === 'pending' || sw.status === 'accepted'));
+                        if (activeSwap) {
+                          return (
+                            <Badge className={`rounded-none uppercase text-[8px] hd-mono font-bold flex items-center gap-1 ${
+                              activeSwap.status === 'pending' ? 'bg-yellow-200 text-yellow-900 border border-yellow-400' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {activeSwap.status === 'pending' ? (
+                                <><Clock className="h-2 w-2" /> SWAP_PENDING</>
+                              ) : (
+                                <><ShieldCheck className="h-2 w-2" /> AWAITING_MANAGER</>
+                              )}
+                            </Badge>
+                          );
+                        }
+                        return null;
+                      })()}
                       <Button variant="outline" size="sm" onClick={() => {
                           setSelectedShift(s);
                           setSelectedColleague('');
@@ -338,14 +377,14 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                    <Button variant="outline" size="sm" onClick={() => setCurrentMonth(addDays(currentMonth, 30))} className="h-7 text-[10px] rounded-none">NEXT</Button>
                 </div>
               </div>
-              <div className="hd-border overflow-hidden">
-                <Table>
-                  <TableHeader className="bg-bg/80">
+              <div className="hd-border overflow-hidden border-r border-line">
+                <Table className="border-collapse">
+                  <TableHeader className="bg-bg/90 sticky top-0 z-20">
                     <TableRow className="hover:bg-transparent border-line">
-                      <TableHead className="hd-label py-2">Employee</TableHead>
-                      <TableHead className="hd-label py-2">Date</TableHead>
-                      <TableHead className="hd-label py-2">Shift Window</TableHead>
-                      <TableHead className="hd-label py-2 text-right">Role</TableHead>
+                      <TableHead className="hd-label py-2 border-r border-line first:border-l-0">Employee</TableHead>
+                      <TableHead className="hd-label py-2 border-r border-line">Date</TableHead>
+                      <TableHead className="hd-label py-2 border-r border-line">Shift Window</TableHead>
+                      <TableHead className="hd-label py-2 text-right border-line">Role</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -355,15 +394,18 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                         return d.getMonth() === currentMonth.getMonth() && d.getFullYear() === currentMonth.getFullYear();
                       })
                       .map(s => (
-                        <TableRow key={s.id} className={`border-line hd-mono text-[11px] ${s.employeeUid === profile.uid ? 'bg-accent/5 font-bold' : ''}`}>
-                          <TableCell className="py-2">{s.employeeName}</TableCell>
-                          <TableCell className="py-2 opacity-70">{format(parseISO(s.date), 'MMM dd (EEE)')}</TableCell>
-                          <TableCell className="py-2 text-accent">{s.startTime} - {s.endTime}</TableCell>
+                        <TableRow key={s.id} className={`border-line hd-mono text-[11px] hover:bg-ink/5 transition-colors ${s.employeeUid === profile.uid ? 'bg-accent/5 font-bold' : ''}`}>
+                          <TableCell className="py-2 border-r border-line">{s.employeeName}</TableCell>
+                          <TableCell className="py-2 border-r border-line opacity-70">{format(parseISO(s.date), 'MMM dd (EEE)')}</TableCell>
+                          <TableCell className="py-2 border-r border-line text-accent font-medium">{s.startTime} - {s.endTime}</TableCell>
                           <TableCell className="py-2 text-right text-[10px] uppercase opacity-50">{s.customerCareRole}</TableCell>
                         </TableRow>
                       ))}
-                    {allShifts.length === 0 && (
-                      <TableRow><TableCell colSpan={4} className="text-center py-20 hd-mono text-xs opacity-30 italic">NO_SHIFTS_PUBLISHED</TableCell></TableRow>
+                    {allShifts.filter(s => {
+                        const d = new Date(s.date);
+                        return d.getMonth() === currentMonth.getMonth() && d.getFullYear() === currentMonth.getFullYear();
+                    }).length === 0 && (
+                      <TableRow><TableCell colSpan={4} className="text-center py-20 hd-mono text-xs opacity-30 italic">NO_SHIFTS_PUBLISHED_FOR_WINDOW</TableCell></TableRow>
                     )}
                   </TableBody>
                 </Table>
@@ -372,126 +414,204 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
           )}
 
           {view === 'swaps' && (
-            <div className="space-y-8">
-              <div className="flex justify-between items-center bg-bg/50 p-4 hd-border">
-                <div className="space-y-1">
-                  <div className="hd-label">Swap Protocol</div>
-                  <div className="text-[10px] opacity-60">INITIATE A NEW SHIFT TRANSFER REQUEST</div>
-                </div>
-                <Button onClick={() => setIsSwapDialogOpen(true)} className="rounded-none hd-mono text-xs gap-2">
-                  <Plus className="h-4 w-4" /> INITIATE_SWAP_REQUEST
-                </Button>
+            <div className="space-y-4">
+              <div className="flex items-center gap-4 border-b border-line pb-px">
+                <button 
+                  onClick={() => setSwapSubView('incoming')}
+                  className={`px-4 py-3 text-[11px] hd-mono font-bold uppercase transition-all border-b-2 ${swapSubView === 'incoming' ? 'border-accent text-accent' : 'border-transparent opacity-40 hover:opacity-100'}`}
+                >
+                  INCOMING_LOGISTICS
+                  {incomingSwaps.filter(s => s.status === 'pending').length > 0 && (
+                    <span className="ml-2 bg-accent text-white px-2 py-0.5 rounded-sm text-[9px] animate-pulse">
+                      {incomingSwaps.filter(s => s.status === 'pending').length}
+                    </span>
+                  )}
+                </button>
+                <button 
+                  onClick={() => setSwapSubView('outgoing')}
+                  className={`px-4 py-3 text-[11px] hd-mono font-bold uppercase transition-all border-b-2 ${swapSubView === 'outgoing' ? 'border-accent text-accent' : 'border-transparent opacity-40 hover:opacity-100'}`}
+                >
+                  OUTBOUND_FLOW
+                </button>
+                <button 
+                  onClick={() => setSwapSubView('history')}
+                  className={`px-4 py-3 text-[11px] hd-mono font-bold uppercase transition-all border-b-2 ${swapSubView === 'history' ? 'border-accent text-accent' : 'border-transparent opacity-40 hover:opacity-100'}`}
+                >
+                  LIFECYCLE_ARCHIVE
+                </button>
               </div>
 
-              <div className="space-y-4">
-                <div className="hd-label">Incoming Requests (Awaiting Your Action)</div>
-                <div className="hd-border overflow-hidden">
-                  <Table>
-                    <TableHeader className="bg-bg">
-                      <TableRow className="hover:bg-transparent border-line">
-                        <TableHead className="hd-label">Requester</TableHead>
-                        <TableHead className="hd-label">Shift Details</TableHead>
-                        <TableHead className="hd-label text-right">Operations</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {incomingSwaps.filter(s => s.status === 'pending' || s.status === 'accepted').map(swap => (
-                        <TableRow key={swap.id} className={`border-line ${swap.status === 'pending' ? 'bg-yellow-50/40 border-l-4 border-l-yellow-600' : ''}`}>
-                          <TableCell className="hd-mono text-xs font-bold">{swap.requesterName}</TableCell>
-                          <TableCell className="hd-mono text-[10px]">
-                            {swap.shiftDate ? format(parseISO(swap.shiftDate), 'MMM dd') : 'N/A'} // {swap.shiftTime || 'N/A'}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {swap.status === 'pending' ? (
-                              <div className="flex justify-end gap-2">
-                                <Button size="sm" onClick={() => handleAcceptSwap(swap)} className="h-7 px-3 text-[10px] rounded-none bg-accent hover:bg-accent/90 text-white">APPROVE</Button>
-                                <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' })} className="h-7 px-3 text-[10px] rounded-none border-line">DENY</Button>
-                              </div>
-                            ) : (
-                               <Badge className="rounded-none uppercase text-[9px] hd-mono bg-blue-100 text-blue-700 font-bold">
-                                 AWAITING_VALIDATION
-                               </Badge>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {incomingSwaps.filter(s => s.status === 'pending' || s.status === 'accepted').length === 0 && (
-                        <TableRow><TableCell colSpan={3} className="text-center py-10 hd-mono text-[10px] opacity-40">NO_ACTIVE_INCOMING_REQUESTS</TableCell></TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
+              <div className="space-y-6 pt-2">
+                {swapSubView === 'incoming' && (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <div className="hd-label">Swap Requests for You</div>
+                      <div className="hd-mono text-[9px] opacity-40 uppercase">Action required on active items</div>
+                    </div>
+                    <div className="hd-border overflow-hidden">
+                      <Table>
+                        <TableHeader className="bg-bg">
+                          <TableRow className="hover:bg-transparent border-line">
+                            <TableHead className="hd-label">Requester</TableHead>
+                            <TableHead className="hd-label">Shift Details</TableHead>
+                            <TableHead className="hd-label">Current Status</TableHead>
+                            <TableHead className="hd-label text-right">Operations</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {incomingSwaps
+                            .filter(s => s.status === 'pending' || s.status === 'accepted' || s.status === 'completed' || s.status === 'approved')
+                            .sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                            .map(swap => (
+                            <TableRow key={swap.id} className={`border-line ${swap.status === 'pending' ? 'bg-yellow-50/40 border-l-4 border-l-yellow-600' : ''}`}>
+                              <TableCell className="hd-mono text-[10px] space-y-0.5">
+                                <div className="font-bold text-accent uppercase">FROM: {swap.requesterName}</div>
+                                <div className="font-bold underline">SHIFT: {swap.shiftDate ? format(parseISO(swap.shiftDate), 'MMM dd') : 'N/A'} // {swap.shiftTime} ({swap.shiftType})</div>
+                                <div className="opacity-40 uppercase mt-1">TO: {profile.displayName || profile.username || 'You'}</div>
+                                <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
+                                  SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={`rounded-none uppercase text-[9px] hd-mono font-bold flex items-center gap-1 ${
+                                  swap.status === 'pending' ? 'bg-yellow-200 text-yellow-900 border border-yellow-400' :
+                                  swap.status === 'accepted' ? 'bg-blue-100 text-blue-700' :
+                                  (swap.status === 'completed' || swap.status === 'approved') ? 'bg-green-100 text-green-700' :
+                                  'bg-red-100 text-red-700'
+                                }`}>
+                                  {swap.status === 'pending' && <><Bell className="h-2 w-2" /> PENDING_YOUR_APPROVAL</>}
+                                  {swap.status === 'accepted' && 'AWAITING_MANAGER_VALIDATION'}
+                                  {(swap.status === 'approved' || swap.status === 'completed') && <><Check className="h-2.5 w-2.5" /> APPROVED_BY_MANAGER</>}
+                                  {swap.status === 'rejected' && 'REJECTED'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {swap.status === 'pending' ? (
+                                  <div className="flex justify-end gap-2">
+                                    <Button size="sm" onClick={() => handleAcceptSwap(swap)} className="h-7 px-3 text-[10px] rounded-none bg-accent hover:bg-accent/90 text-white font-bold">ACCEPT_SWAP</Button>
+                                    <Button size="sm" variant="outline" onClick={() => updateDoc(doc(db, 'swaps', swap.id), { status: 'rejected' })} className="h-7 px-3 text-[10px] rounded-none border-line font-bold">DECLINE</Button>
+                                  </div>
+                                ) : (
+                                   <div className="hd-mono text-[9px] opacity-40 italic">
+                                     {swap.status === 'completed' ? 'STABILIZED' : 'LOCKED_FOR_REVIEW'}
+                                   </div>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {incomingSwaps.filter(s => s.status === 'pending' || s.status === 'accepted' || s.status === 'completed' || s.status === 'approved').length === 0 && (
+                            <TableRow><TableCell colSpan={4} className="text-center py-20 hd-mono text-[10px] opacity-40">NO_ACTIVE_INCOMING_LOGISTICS</TableCell></TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
 
-              <div className="space-y-4">
-                <div className="hd-label">Sent Requests (Outbound Queue)</div>
-                <div className="hd-border overflow-hidden">
-                  <Table>
-                    <TableHeader className="bg-bg">
-                      <TableRow className="hover:bg-transparent border-line">
-                        <TableHead className="hd-label">Target Colleague</TableHead>
-                        <TableHead className="hd-label">Current Status</TableHead>
-                        <TableHead className="hd-label text-right">Created At</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {mySwaps.filter(s => s.status === 'pending' || s.status === 'accepted').map(swap => (
-                        <TableRow key={swap.id} className={`border-line ${swap.status === 'pending' ? 'bg-yellow-50/40 border-l-4 border-l-yellow-600' : ''}`}>
-                          <TableCell className="hd-mono text-xs font-bold">{swap.receiverName}</TableCell>
-                          <TableCell>
-                            <Badge className={`rounded-none uppercase text-[9px] hd-mono ${swap.status === 'pending' ? 'bg-yellow-100 text-yellow-700 font-bold' : 'bg-blue-100 text-blue-700 font-bold'}`}>
-                              {swap.status === 'pending' ? 'PENDING_RESPONSE' : 'AWAITING_VALIDATION'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right hd-mono text-[9px] opacity-50">
-                            {format(new Date(swap.createdAt), 'yyyy-MM-dd HH:mm')}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {mySwaps.filter(s => s.status === 'pending' || s.status === 'accepted').length === 0 && (
-                        <TableRow><TableCell colSpan={3} className="text-center py-10 hd-mono text-[10px] opacity-40">NO_ACTIVE_OUTBOUND_REQUESTS</TableCell></TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
+                {swapSubView === 'outgoing' && (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <div className="hd-label">Log of Your Outbound Flow</div>
+                      <div className="hd-mono text-[9px] opacity-40 uppercase">Tracking requested shift transfers</div>
+                    </div>
+                    <div className="hd-border overflow-hidden">
+                      <Table>
+                        <TableHeader className="bg-bg">
+                          <TableRow className="hover:bg-transparent border-line">
+                            <TableHead className="hd-label">Target Colleague</TableHead>
+                            <TableHead className="hd-label">Shift Details</TableHead>
+                            <TableHead className="hd-label">Request Status</TableHead>
+                            <TableHead className="hd-label text-right">Last Update</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {mySwaps
+                            .filter(s => s.status === 'pending' || s.status === 'accepted' || s.status === 'completed' || s.status === 'approved')
+                            .sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                            .map(swap => (
+                            <TableRow key={swap.id} className={`border-line ${swap.status === 'pending' ? 'bg-yellow-50/20' : ''}`}>
+                              <TableCell className="hd-mono text-[10px] space-y-0.5">
+                                <div className="opacity-40 uppercase">FROM: {profile.displayName || profile.username || 'You'}</div>
+                                <div className="font-bold underline">SHIFT: {swap.shiftDate} // {swap.shiftTime} ({swap.shiftType})</div>
+                                <div className="font-bold text-accent uppercase mt-1">TO: {swap.receiverName}</div>
+                                <div className={(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'opacity-40 italic' : 'font-bold'}>
+                                  SHIFT TO BE CHANGED REQ: {(!swap.targetShiftDate || swap.targetShiftDate === 'Shift to be changed! Here Data // Time') ? 'Shift to be changed! Here Data // Time' : `${swap.targetShiftDate} // ${swap.targetShiftTime} (${swap.targetShiftType}) !`}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={`rounded-none uppercase text-[9px] hd-mono font-bold flex items-center gap-1 ${
+                                  swap.status === 'pending' ? 'bg-yellow-200 text-yellow-900 border border-yellow-400' :
+                                  swap.status === 'accepted' ? 'bg-blue-100 text-blue-700' :
+                                  (swap.status === 'approved' || swap.status === 'completed') ? 'bg-green-100 text-green-700' :
+                                  'bg-red-100 text-red-700'
+                                }`}>
+                                  {swap.status === 'pending' && <><Clock className="h-2 w-2" /> PENDING_COLLEAGUE_RESPONSE</>}
+                                  {swap.status === 'accepted' && 'AWAITING_MANAGER_VALIDATION'}
+                                  {(swap.status === 'approved' || swap.status === 'completed') && <><Check className="h-2.5 w-2.5" /> APPROVED_BY_MANAGER</>}
+                                  {swap.status === 'rejected' && 'REJECTED'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right hd-mono text-[9px] opacity-50">
+                                {format(new Date(swap.createdAt), 'MM-dd HH:mm')}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {mySwaps.filter(s => s.status === 'pending' || s.status === 'accepted' || s.status === 'completed' || s.status === 'approved').length === 0 && (
+                            <TableRow><TableCell colSpan={4} className="text-center py-20 hd-mono text-[10px] opacity-40">OUTBOUND_FLOW_EMPTY</TableCell></TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
 
-              <div className="space-y-4">
-                <div className="hd-label">Past Requests (History)</div>
-                <div className="hd-border overflow-hidden opacity-60">
-                  <Table>
-                    <TableHeader className="bg-bg">
-                      <TableRow className="hover:bg-transparent border-line">
-                        <TableHead className="hd-label">Colleague</TableHead>
-                        <TableHead className="hd-label">Shift</TableHead>
-                        <TableHead className="hd-label text-right">Final Status</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {[...mySwaps, ...incomingSwaps]
-                        .filter(s => s.status === 'completed' || s.status === 'rejected')
-                        .sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                        .map(swap => (
-                        <TableRow key={swap.id} className="border-line">
-                          <TableCell className="hd-mono text-xs">
-                            {swap.requesterId === profile.uid ? `TO: ${swap.receiverName}` : `FROM: ${swap.requesterName}`}
-                          </TableCell>
-                          <TableCell className="hd-mono text-[9px]">
-                            {swap.shiftDate} // {swap.shiftTime}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <Badge className={`rounded-none uppercase text-[8px] hd-mono ${swap.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                              {swap.status}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {[...mySwaps, ...incomingSwaps].filter(s => s.status === 'completed' || s.status === 'rejected').length === 0 && (
-                        <TableRow><TableCell colSpan={3} className="text-center py-6 hd-mono text-[9px] opacity-40">HISTORY_EMPTY</TableCell></TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
+                {swapSubView === 'history' && (
+                  <div className="space-y-4">
+                    <div className="hd-label opacity-60">Full Lifecycle Archive</div>
+                    <div className="hd-border overflow-hidden opacity-60">
+                      <Table>
+                        <TableHeader className="bg-bg">
+                          <TableRow className="hover:bg-transparent border-line">
+                            <TableHead className="hd-label">Relationship</TableHead>
+                            <TableHead className="hd-label">Shift</TableHead>
+                            <TableHead className="hd-label text-right">Final Outcome</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {[...mySwaps, ...incomingSwaps]
+                            .filter(s => s.status === 'completed' || s.status === 'rejected')
+                            .sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                            .map(swap => (
+                            <TableRow key={swap.id} className="border-line font-mono text-[10px]">
+                              <TableCell>
+                                {swap.requesterId === profile.uid ? `TO: ${swap.receiverName}` : `FROM: ${swap.requesterName}`}
+                              </TableCell>
+                              <TableCell className="opacity-70 space-y-0.5">
+                                <div className="flex items-center gap-1">
+                                  <span>{swap.shiftDate} ({swap.shiftType})</span>
+                                  {swap.targetShiftType && (
+                                    <>
+                                      <ArrowLeftRight className="h-2 w-2 opacity-30" />
+                                      <span className="text-accent font-bold">{swap.targetShiftDate} ({swap.targetShiftType})</span>
+                                    </>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Badge className={`rounded-none uppercase text-[8px] hd-mono font-bold ${swap.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                  {swap.status === 'completed' ? 'APPROVED_BY_MANAGER' : 'REJECTED'}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {[...mySwaps, ...incomingSwaps].filter(s => s.status === 'completed' || s.status === 'rejected').length === 0 && (
+                            <TableRow><TableCell colSpan={3} className="text-center py-6 hd-mono text-[9px] opacity-40">ARCHIVE_EMPTY</TableCell></TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -542,34 +662,12 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-                <Label className="hd-label">Select Your Shift</Label>
+                <Label className="hd-label">1. Select Target Colleague</Label>
                 <Select onValueChange={(val) => {
-                  const s = myShifts.find(x => x.id === val);
-                  setSelectedShift(s || null);
-                }} value={selectedShift?.id}>
-                    <SelectTrigger className="rounded-none hd-mono text-xs border-line bg-bg">
-                        <SelectValue placeholder="CHOOSE_FROM_SCHEDULE" />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-none border-line">
-                        {myShifts.filter(s => s.date >= today).map(s => (
-                            <SelectItem key={s.id} value={s.id}>
-                              {format(parseISO(s.date), 'MMM dd')} - {s.startTime} ({s.type})
-                            </SelectItem>
-                        ))}
-                    </SelectContent>
-                </Select>
-            </div>
-            {selectedShift && (
-              <div className="p-3 bg-accent/5 border border-accent/20 hd-mono text-[10px] space-y-1">
-                  <div className="font-bold text-accent uppercase">Shift Metadata:</div>
-                  <div>DATE: {format(parseISO(selectedShift.date), 'EEEE, MMM dd')}</div>
-                  <div>WINDOW: {selectedShift.startTime} - {selectedShift.endTime}</div>
-                  <div>ROLE: {selectedShift.customerCareRole}</div>
-              </div>
-            )}
-            <div className="space-y-2">
-                <Label className="hd-label">Select Target Colleague</Label>
-                <Select onValueChange={setSelectedColleague} value={selectedColleague}>
+                  setSelectedColleague(val);
+                  setSelectedShift(null);
+                  setSelectedTargetShift(null);
+                }} value={selectedColleague}>
                     <SelectTrigger className="rounded-none hd-mono text-xs border-line">
                         <SelectValue placeholder="SELECT_EMPLOYEE" />
                     </SelectTrigger>
@@ -580,6 +678,72 @@ export default function EmployeeDashboard({ profile, notifications }: EmployeeDa
                     </SelectContent>
                 </Select>
             </div>
+
+            {selectedColleague && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                <Label className="hd-label">2. Select Colleague's Shift (to receive)</Label>
+                <Select onValueChange={(val) => {
+                  if (val === 'none') {
+                    setSelectedTargetShift(null);
+                  } else {
+                    const s = allShifts.find(x => x.id === val);
+                    setSelectedTargetShift(s || null);
+                  }
+                  setSelectedShift(null); // Reset my shift when colleague shift changes
+                }} value={selectedTargetShift?.id || (selectedTargetShift === null ? 'none' : undefined)}>
+                  <SelectTrigger className="rounded-none hd-mono text-xs border-line bg-bg">
+                    <SelectValue placeholder="CHOOSE_THEIR_SHIFT" />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-none border-line">
+                    <SelectItem value="none">NO_SPECIFIC_SHIFT_REQUESTED</SelectItem>
+                    {allShifts
+                      .filter(s => s.employeeUid === selectedColleague && s.date >= today)
+                      .map(s => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {format(parseISO(s.date), 'MMM dd')} - {s.startTime} ({s.type})
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {selectedTargetShift && (
+              <div className="p-3 bg-accent/5 border border-accent/20 hd-mono text-[10px] space-y-1 animate-in fade-in slide-in-from-top-1">
+                  <div className="font-bold text-accent uppercase">Requested Shift Info:</div>
+                  <div>DATE: {format(parseISO(selectedTargetShift.date), 'EEEE, MMM dd')}</div>
+                  <div>WINDOW: {selectedTargetShift.startTime} - {selectedTargetShift.endTime}</div>
+                  <div>TYPE: {selectedTargetShift.type.toUpperCase()}</div>
+              </div>
+            )}
+
+            {selectedColleague && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                <Label className="hd-label">3. Select Your Shift (my shift to be changed)</Label>
+                <Select onValueChange={(val) => {
+                  const s = myShifts.find(x => x.id === val);
+                  setSelectedShift(s || null);
+                }} value={selectedShift?.id}>
+                  <SelectTrigger className="rounded-none hd-mono text-xs border-line">
+                    <SelectValue placeholder={selectedTargetShift ? `CHOOSE_YOUR_${selectedTargetShift.type.toUpperCase()}_SHIFT` : "CHOOSE_FROM_SCHEDULE"} />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-none border-line">
+                    {myShifts
+                      .filter(s => s.date >= today && (!selectedTargetShift || s.type === selectedTargetShift.type))
+                      .map(s => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {format(parseISO(s.date), 'MMM dd')} - {s.startTime} ({s.type})
+                        </SelectItem>
+                      ))}
+                    {myShifts.filter(s => s.date >= today && (!selectedTargetShift || s.type === selectedTargetShift.type)).length === 0 && (
+                      <div className="p-2 text-[9px] hd-mono opacity-40 text-center uppercase">
+                        {selectedTargetShift ? `No matching ${selectedTargetShift.type} shifts found in your schedule` : "No shifts found"}
+                      </div>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button 

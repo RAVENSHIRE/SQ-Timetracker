@@ -33,6 +33,13 @@ service cloud.firestore {
     // ===============================================================
 
     // ===============================================================
+    // Global Safety Net (Default Deny)
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
     // Helper Functions
     // ===============================================================
     
@@ -44,10 +51,22 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Auth tokens for anonymous users often don't have email_verified or email.
+    // Managers are verified by their role in the 'users' collection.
+    function isManager() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager';
+    }
+
     function isAdmin() {
       return isAuthenticated() && 
-        ((request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true) ||
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'));
+        ((request.auth.token.email == "j.krayenbuehl@gmail.com" && request.auth.token.email_verified == true) || 
+        isManager());
+    }
+
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
     }
 
     function isValidUser(data) {
@@ -98,39 +117,41 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{userId} {
-      allow read: if isAuthenticated();
+      allow get, list: if isAuthenticated();
       allow create: if isAuthenticated() && isValidUser(request.resource.data) && isOwner(userId) && 
                     (request.resource.data.role == 'employee' || request.resource.data.username == 'Admin' || isAdmin());
       allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role));
     }
 
     match /shifts/{shiftId} {
-      allow read: if isAdmin() || (isAuthenticated() && (
-        request.auth.uid == resource.data.employeeUid || 
-        request.auth.token.email == resource.data.employeeId
-      ));
+      // Team Plan visibility: Allow all authenticated staff to list/get shifts
+      allow get, list: if isAuthenticated();
       allow create, update: if isAdmin() && isValidShift(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /breakPlans/{planId} {
-      allow read: if isAuthenticated(); 
+      // Team break visibility
+      allow get, list: if isAuthenticated(); 
       allow create, update: if isAdmin() && isValidBreakPlan(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /swaps/{swapId} {
-      allow read: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId));
-      allow create: if isAuthenticated() && isValidSwap(request.resource.data) && request.auth.uid == request.resource.data.requesterId;
+      // Standard swapping flow: Allow relational access
+      allow get: if isAdmin() || (isAuthenticated() && (request.auth.uid == resource.data.requesterId || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId));
+      allow list: if isAdmin() || (isAuthenticated() && (resource.data.requesterId == request.auth.uid || resource.data.receiverUid == request.auth.uid || resource.data.receiverId == request.auth.token.email));
+      allow create: if (isAuthenticated() && isValidSwap(request.resource.data) && request.auth.uid == request.resource.data.requesterId) || isAdmin();
       allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.receiverUid || request.auth.token.email == resource.data.receiverId);
       allow delete: if isAdmin();
     }
 
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow get: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isAdmin();
+      allow list: if (isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin();
       allow create: if isAdmin() && isValidNotification(request.resource.data);
-      allow update: if isAuthenticated() && request.auth.uid == resource.data.userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
-      allow delete: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow update: if (isAuthenticated() && request.auth.uid == resource.data.userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) || isAdmin();
+      allow delete: if (isAuthenticated() && request.auth.uid == resource.data.userId) || isAdmin();
     }
   }
 }
